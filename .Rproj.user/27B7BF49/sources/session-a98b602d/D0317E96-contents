@@ -1,0 +1,1080 @@
+---
+title: "Mussel Exp Log"
+author: "Dylan Baker"
+date: "02-22-23"
+output: html_document
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*.
+
+```{r setup}
+knitr::opts_chunk$set(
+	message = FALSE,
+	warning = FALSE,
+	include = FALSE
+)
+library(conflicted)
+library(rstatix)
+library(ggpubr)
+library(tidyverse)
+library(lubridate)
+library(glue)
+library(readxl)
+library(googlesheets4)
+library(ggnewscale)
+
+#Which functions that are preferred to be used if there is a conflict
+conflicts_prefer(dplyr::select, dplyr::mutate, dplyr::rename, dplyr::filter, dplyr::arrange)
+
+#Importing data from excel function
+read_data <- function(file_list) {
+  read_excel(file_list, 
+             col_types = c("date", "numeric", "numeric", 
+                           "numeric", "numeric", "numeric", 
+                           "numeric","text","text","text","text","text")) |>
+    na.omit()
+}
+
+#Plotting fluorescence change during a mussel experiment and outputting the file as a png
+plot_fp_data <- function(split_df) {
+  for (i in 1:length(split_df)) {
+    print( ggplot(data = split_df[[i]], aes(x = hours, y = avg_chla, shape = source, color = category)) +
+             geom_point(data = filter(split_df[[i]], Timepoint != "TF"),size = 2, 
+                        position = position_dodge(width = 0.025)) +
+             geom_point(data = filter(split_df[[i]], Timepoint == "TF"),size = 2,
+                        position = position_dodge(width = 0.025)) + 
+             geom_line(data = filter(split_df[[i]], Timepoint != "TF")) +
+             geom_errorbar(mapping = aes(ymin = avg_chla - sd_chla,
+                                         ymax = avg_chla + sd_chla), width = 0.025,
+                           position = position_dodge(width = 0.025)) +
+             scale_shape_manual("",
+                                values = c("Mixed" = 17,
+                                           "Water Column" = 16),
+                                labels = c("blugrn_avg" = "Bluegreen",
+                                           "grn_avg" = "Green Algae")) +
+             scale_color_manual("", values = c("blugrn" = "royalblue1",
+                                               "grn" = "lightgreen",
+                                               "total_chla" = "tan"),
+                                labels = c("blugrn" = "Bluegreen",
+                                           "grn" = "Green Algae",
+                                           "total_chla" = "Total Chlorophyll-A")) +
+             new_scale_color() +
+             geom_vline(aes(xintercept = open_time1, color = "mussel1"), linetype = "dashed", 
+                        key_glyph = "path") +
+             geom_vline(aes(xintercept = open_time2, color = "mussel2"), linetype = "dashed", 
+                        key_glyph = "path") +
+             scale_color_manual("", values = c("mussel1" = "red3",
+                                           "mussel2" = "#FFC20A"),
+                                labels = c("mussel1" = "Mussel 1 Open",
+                                           "mussel2" = "Mussel 2 Open")) +
+             scale_x_continuous(breaks = c(0,0.5,1,1.5,2)) +
+             xlab("Time Point (Hours)") +
+             ylab("Chlorophyll (μg/L)") +
+             facet_wrap(~ treatment + Date) +
+             theme_pubclean() +
+             theme(legend.position = "right",
+                   axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)))
+    
+    ggsave(glue("./figures/fp_results/","{names(split_df[i])}",".png"), width = 180,
+           height = 200, units = 'mm', dpi = 450)
+  }
+}
+
+```
+
+```{r warning=FALSE}
+getwd()
+
+#Make a list of the paths of files so that R can import with read_csv
+file_list <- list.files(path = ".",
+                        full.names = TRUE, ignore.case = TRUE, pattern = "QMF.*xlsx$")
+
+# for (i in 1:length(split_df)) {
+#     print( ggplot(data = split_df[[i]], aes(x = hours, y = chla, 
+#                                             shape = source, color = category)) +
+#              geom_point(data = filter(split_df[[i]], 
+#                                       ! Timepoint %in% c("TE","TF")),size = 2, 
+#                         position = position_dodge(width = 0.025)) +
+#              geom_point(data = filter(split_df[[i]], Timepoint == "TF"),size = 2,
+#                         position = position_dodge(width = 0.025)) + 
+#              #geom_point(data = filter(split_df[[i]], Timepoint == "TE"),size = 2,shape = 18, position = position_dodge(width = 0.025)) + 
+#              geom_line(data = filter(split_df[[i]])) +
+#              #stat_smooth(data = filter(split_df[[i]], Timepoint != "TF"), method = "lm", se = F) +
+#              scale_shape_manual("",
+#                                 values = c("Mixed" = 17,
+#                                            "Water Column" = 16),
+#                                 labels = c("blugrn" = "Bluegreen",
+#                                            "grn" = "Green Algae")) +
+#              scale_color_manual("", values = c("blugrn" = "royalblue1",
+#                                                "grn" = "lightgreen",
+#                                                "crypto" = "orange",
+#                                                "total_chla" = "gold1"),
+#                                 labels = c("blugrn" = "Bluegreen",
+#                                            "grn" = "Green Algae",
+#                                            "crypto" = "Cryptophyte",
+#                                            "total_chla" = "Total Chlorophyll")) +
+#              geom_errorbar(mapping = aes(ymin = chla - sd,
+#                                          ymax = chla + sd), width = 0.025,
+#                            position = position_dodge(width = 0.025)) +
+#              scale_y_continuous(limits = c(0,20),breaks = c(0,5,10,15,20), minor_breaks = c(2.5,7.5,12.5,17.5)) +
+#              scale_x_continuous(breaks = c(0,0.25,0.50,0.75,1,1.5,2)) +
+#              xlab("Time Point (Hours)") +
+#              ylab("Chlorophyll (μg/L)") +
+#              facet_wrap(facets = "Treatment") +
+#              theme_pubclean() +
+#              theme(legend.position = "right") )
+#     
+#     ggsave(glue("../../figures/mf_results/raw_fp_results/","{names(split_df[i])}",".png"), width = 180,
+#            height = 200, units = 'mm', dpi = 450)
+# }
+    
+
+
+map <- read_csv("DAM_map.csv", col_types = cols(
+    Date = col_date(format = "%m/%d/%Y"),
+    open_time1 = col_time(format = "%H:%M"), 
+    open_time2 = col_time(format = "%H:%M"),
+    avg_open_time = col_time(format = "%H:%M"))) |>
+  rowwise() |>
+  mutate(treatment = str_to_upper(treatment),
+         avg_open_time = as.POSIXct(paste(Date, avg_open_time), format = "%Y-%m-%d %H:%M", tz = "UTC"),
+         open_time2 = as.POSIXct(paste(Date, open_time2), format = "%Y-%m-%d %H:%M", tz = "UTC"),
+         open_time1 = as.POSIXct(paste(Date, open_time1), format = "%Y-%m-%d %H:%M", tz = "UTC"),
+         Date = format(Date,"%m-%d-%Y")) |>
+  select(-strain)
+
+
+#Import plate data with annotations
+raw_data <- file_list |>
+  map_df(~read_data(.))
+
+#Import fluoroprobe data from mussel feeding exp
+fp_data <-  raw_data |>
+  rename("blugrn" = Bluegreen,
+         "time" = `Date/Time`,
+         "grn" = `Green Algae`,
+         "total_chla" = `Total conc.`) |>
+  mutate(dd = lubridate::decimal_date(time),
+         Date = format(time,"%m-%d-%Y"),
+         Treatment = str_remove_all(Treatment, ' '),
+         Treatment = str_to_upper(Treatment)) |>
+  pivot_longer(cols = c(blugrn,grn,total_chla), 
+               names_to = 'category', values_to = 'chla') #This step will help later in rate calculations.
+
+fp_summary <- fp_data %>%
+  group_by(Treatment, Timepoint, Date, category) %>%
+    #Average the plate reader technical replicates. Using across() saves us from doing the renaming ourselves
+  dplyr::summarise(across(c(chla, time), list(avg = mean, sd = sd), .names = "{.fn}_{.col}")) |>
+  select(-c(sd_time)) |>
+  ungroup() |>
+  mutate(strain = case_when(str_detect(Treatment, "^S") ~ paste0("S", str_extract(Treatment, "\\d\\d|\\d")),
+                            T ~ "C"),
+         rep = case_when(str_detect(Treatment, "Q") ~ str_extract(Treatment, "Q\\d"),
+                         T ~ "C"),
+         treatment = paste0(strain,rep)) |>
+  select(-Treatment)
+
+
+treatment <- filter(fp_summary, rep != "C")
+
+#There was a lag between T0 and T1 because of waiting for mussels to open. This corrects that issue.
+# t0_correct <- filter(fp_summary, Timepoint %in% c("T0")) |>
+#   select(-avg_time) |>
+#   filter(str_detect(treatment, "Q")) |>
+#   inner_join(map, by = c('treatment', 'Date')) |>
+#   select(treatment,category,avg_chla,sd_chla,avg_time,strain, rep, Timepoint,Date,avg_time) |>
+#   unique()
+
+mussel_open_time <- map |>
+  select(treatment,Date,open_time1,open_time2,volume,UPF,,M1, M2)
+                     
+full_data <- fp_summary |>
+  group_by(treatment,category, Date) |>
+  full_join(mussel_open_time, by = c("Date", 'treatment')) |>
+  mutate(
+    avg_time = ifelse(Timepoint == 'TF', avg_time[avg_time == max(avg_time[avg_time != max(avg_time)])], avg_time),
+    begin = min(avg_time),
+    closed_interval1 = begin %--% open_time1,
+    closed_interval2 = begin %--% open_time2,
+    read_interval = begin %--% avg_time,
+    hours = as.numeric(as.duration((read_interval) / dhours(1))),
+    open_time1 = as.numeric(as.duration((closed_interval1) / dhours(1))),
+    open_time2 = as.numeric(as.duration((closed_interval2) / dhours(1))),
+    #Get time between each read
+    source = case_when(Timepoint == "TF" ~ "Mixed", #Water column is during the experiment while mixed is the final reading.
+                       T ~ "Water Column")
+  ) |>
+  select(-c(begin, read_interval, closed_interval1, closed_interval2))
+#filter(category != "total_chla")
+ 
+split_df <- split(full_data, f = list(full_data$strain),drop = T,sep = '_')
+
+plot_fp_data(split_df)
+```
+
+(From Vanderploeg 2001) C is the mean Chl a concentration in the water column at the end of the experiment in control containers, Z is the Chl a concentration in the water column of an experimental container at the end of the experiment, V is the volume of water in the container during the experiment, n is the number of mussels, and t is the duration of the experiment.
+
+```{r Mussel AFDW}
+mussel_info <- read_csv("./mussel_DW_LM2025.csv") |>
+  mutate(GDW = gut_dry_mass - capsule_mass,
+         PAW = gut_pa_mass - capsule_mass,
+         AFDW = GDW - PAW,
+         combust_eff = AFDW/GDW)
+
+#Linear regression of AFDW and GDW of mussel tissue and shell-length
+AFDW_lm <- rlm(AFDW ~ length, data = mussel_info) #Robust linear model, log transformed
+
+predict_M1 <- predict(AFDW_lm, newdata = data.frame(length = full_data$M1))
+predict_M2 <- predict(AFDW_lm, newdata = data.frame(length = full_data$M2))
+full_data$M1_AFDW <- predict_M1
+full_data$M2_AFDW <- predict_M2
+
+#Check for normality, non-sig p-value indicates normality
+shapiro_test(mussel_info$AFDW) # p > 0.05
+
+#Check residuals vs fitted plot
+plot(lm(AFDW ~ length, data = mussel_info))
+
+AFDW_plot <- ggplot(mussel_info, aes(x = length, y = AFDW)) +
+  geom_point(aes(group = )) +
+  geom_smooth(aes(group = ), method = "rlm",
+              formula = y~x, level = 0.95, alpha = .15) +
+  scale_color_manual(values =  c("1" = 'royalblue1'),
+                     ""
+                    )+
+  labs(y = "Ash-Free Dry Weight (mg)",
+       x = "Mussel Shell Length (mm)") +
+  stat_regline_equation(label.y = c(19,18)) +
+  stat_cor(method = "pearson",
+    aes(label = paste(after_stat(rr.label), after_stat(p.label), sep = "~`,`~"))) + 
+  theme_pubr(base_size = 14)
+
+treatment_data <- full_data |>
+  dplyr::mutate(V = 1500,
+         VFWC = case_when(Timepoint == 'T0' ~ 0,
+                          Timepoint == 'T1' ~ 25,
+                          Timepoint == 'T2' ~ 50,
+                          Timepoint == 'T3' ~ 75,
+                          Timepoint == 'T4' ~ 100,
+                          Timepoint == 'T5' ~ 125,
+                          T ~ NA),
+         VFWC = ifelse(is.na(VFWC), VFWC[avg_time == max(avg_time[avg_time != max(avg_time)])] + 25, VFWC),
+         VFM = V - VFWC) |>
+  dplyr::mutate(
+         total_AFDW = rowSums(pick(M1_AFDW, M2_AFDW), na.rm = T),
+         total_C = total_AFDW * 0.524,
+         percent_C = total_C/total_AFDW)
+
+#Calculations for control data to get final water column and mixed measurements to correct for settling and death in mussel grazer experiments 
+control_data <- filter(treatment_data, rep == 'C') |>
+  select(treatment,Timepoint, Date, strain, category, avg_chla, avg_time, V, VFWC, VFM, hours) |>
+  group_by(strain, Date, category) |>
+  mutate(C0 = avg_chla[Timepoint == "T0"], #Initial control measurement time T0.
+         CFWC = avg_chla[Timepoint == "T5"], #Final control measurement before mixing
+         CFM = avg_chla[Timepoint == "TF"]) |>#Final control measurement mixed
+  filter(VFM == min(VFM)) |> #Filter out unneeded rows
+  dplyr::mutate(CFMx = (VFM/V)*CFM+(VFWC/V)*CFWC) |> #Control final corrected for sample volume removed
+  ungroup() |>
+  dplyr::select(-c(Timepoint,treatment,avg_chla,V,VFM,VFWC,hours)) |>
+  unique()
+
+#Calculations for experimental data to get final water column and mixed measurements
+exp_data <-  filter(treatment_data, rep != 'C') |>
+  select(treatment,Timepoint, Date, strain,open_time1, open_time2,total_AFDW, category, avg_chla, avg_time, V, VFWC, VFM, hours) |>
+  group_by(treatment, strain, Date, category) |>
+  mutate(Z0 = avg_chla[Timepoint == "T0"], #Initial control measurement time T0.
+         ZFWC = avg_chla[Timepoint == "T5"], #Final control measurement before mixing
+         ZFM = avg_chla[Timepoint == "TF"]) |> #Final control measurement mixed
+  filter(VFM == min(VFM)) |> #Filter out unneeded rows
+  mutate(ZFMx = (VFM/V)*ZFM+(VFWC/V)*ZFWC, #Control final corrected for sample volume removed
+         ZavWC = (Z0-ZFWC)/log(Z0/ZFWC), #Average concentration chla in the water column
+         ZavM = (Z0-ZFM)/log(Z0/ZFM)) |> #Control final corrected for sample volume removed
+  ungroup() |>
+  select(-c(Timepoint, avg_chla, avg_time)) |>
+  unique()
+
+#Combine the experimental and control data to caluclate feeding and clearance rates
+combined_data <-merge(exp_data, control_data,by= c('strain', 'Date', 'category')) |>
+  mutate(across(everything(), \(x) replace_na(x, 0))) |>
+  #Merge control data with exp data.
+  mutate(closed_duration = (open_time1 + open_time2) /2,
+        FR = (V/(total_AFDW*(hours-closed_duration)))*(log(Z0)-log(ZFWC)+log(CFWC)-log(C0)), #Clearance rate on amount removed, includes correction
+         FI = (V/(total_AFDW*(hours-closed_duration)))*(log(Z0)-log(ZFMx)-log(C0)+log(CFMx)), #Clearance rate on amount ingested, includes correction
+         CR = ZavWC*FR/1000,#Capture rate
+         IR = ZavM*FI/1000, #Ingestion rate
+         ) |>
+  filter(!((category == 'blugrn' | category == 'total_chla') & strain == 'C'))#Chlamy treatment does not have any bluegreens
+
+#Change all Inf, NA, NaN values to 0, as these represent treatments where either bluegreen or green were not present. E.g. C. oblonga controls
+combined_data[sapply(combined_data, is.infinite)] <- NA
+combined_data[sapply(combined_data, is.nan)] <- NA
+
+long_data <- combined_data |>
+  select(strain, Date, treatment, category,
+          FR, #Clearance rates on amount removed mL/mg/h
+          FI, #Clearance rates on amount ingested mL/mg/h
+          CR, #Capture rate or "search" rate
+          IR) |> #Ingestion rate
+  pivot_longer(
+    cols = c(
+          FR, #Clearance rates on amount removed mL/mg/h
+          FI, #Clearance rates on amount ingested mL/mg/h
+          CR, #Capture rate or "search" rate
+          IR) #Ingestion rate
+    ,
+    names_to = c("metric"),
+    values_to = "rate"
+  ) |>
+  filter(!is.na(rate)) |>
+  group_by(strain, metric, Date, category,treatment) |>
+  mutate(metric = factor(metric, levels = c('FR','FI','CR','IR'))) |>
+  dplyr::summarise(across(rate, list(avg = mean, sd = sd, se= ~sd(.)/sqrt(n())), .names = "{.fn}_{.col}"))
+```
+```{r Plotting Clearance and Ingestion Rates}
+
+#New facet label names for metric variable
+metric.labs <- c(`FR` = "Removed Material",
+                    `FI` = "Ingested Material",
+                    `CR`= "Capture Rate",
+                    `IR` = "Ingestion Rate")
+#Group data by metric and category, filter out total chla
+summary_data <- combined_data |>
+  select(strain, Date, treatment, category,strain,
+          FR, #Clearance rates on amount removed mL/mg/h
+          FI, #Clearance rates on amount ingested mL/mg/h
+          CR, #Capture rate or "search" rate
+          IR) |> #Ingestion rate
+  pivot_longer(
+    cols = c(
+          FR, #Clearance rates on amount removed mL/mg/h
+          FI, #Clearance rates on amount ingested mL/mg/h
+          CR, #Capture rate or "search" rate
+          IR), #Ingestion rate
+    names_to = c("metric"),
+    values_to = "rate"
+  ) |>
+  filter(!is.na(rate)) |>
+  group_by(metric,category, strain) |>
+  mutate(metric = factor(metric, levels = c('FR','FI','CR','IR'))) |>
+  dplyr::summarise(across(rate, list(avg = mean, sd = sd), .names = "{.fn}_{.col}"))
+  
+#First look at ingestion rate, clearance rate,
+clearance_summary_plots <- ggplot(data = filter(summary_data, metric %in% c("FR","FI"), category == "grn"), 
+       aes(x = strain, y = avg_rate, color = strain)) +
+  ylab("Clearance Rate (mL/mg AFDW/h)") +
+  xlab("Treatment") +
+  geom_col(width = .7 , fill = NA, position = position_dodge(width = 0.75)) +
+  facet_wrap(~metric, labeller = as_labeller(metric.labs), ncol = 2) +
+  #scale_y_continuous(breaks = c(0,20,40,60,80)) +
+  geom_errorbar(aes(ymin = avg_rate - sd_rate, ymax = avg_rate + sd_rate), 
+                width = 0.3, 
+                position = position_dodge(width = 0.75)) +
+  scale_color_manual("", values = c("mixed" = "orange2",
+                                               "chlamy" = "chartreuse4"),
+                                labels = c("mixed" = "Chlamydomonas in Mixed Treatment",
+                                           "chlamy" = "Chlamydomonas alone")) +
+  theme_pubclean(base_size = 12) +
+  #geom_text(aes(label = Letters, x = strain, y = avg_IRB + sd_IRB + 0.01), check_overlap = T) +
+  rotate_x_text(angle = 60)
+
+#First look at ingestion rate, clearance rate,
+clearance_plots <- ggplot(data = filter(long_data, metric %in% c("FR","FI"),
+                                       category == "grn") |> arrange(strain), 
+       aes(x = strain, y = avg_rate, color = strain)) +
+  ylab("Rate (mL/mg AFDW/h)") +
+  xlab("strain Exposed to Prior to Experiment") +
+  geom_boxplot(width = .7 , fill = NA, position = position_dodge(width = 0.75)) +
+  facet_wrap(~metric, labeller = as_labeller(metric.labs), nrow =2) +
+  scale_y_continuous(breaks = c(0,20,40,60,80)) +
+  geom_errorbar(aes(ymin = avg_rate - sd_rate, ymax = avg_rate + sd_rate), width = 0.3, position = position_dodge(width = 0.75)) +
+  scale_color_manual("", values = c("mixed" = "orange2",
+                                               "chlamy" = "chartreuse4"),
+                                labels = c("mixed" = "Chlamydomonas in Mixed Treatment",
+                                           "chlamy" = "Chlamydomonas alone")) +
+  theme_pubclean(base_size = 12) +
+  #geom_text(aes(label = Letters, x = strain, y = avg_IRB + sd_IRB + 0.01), check_overlap = T) +
+  rotate_x_text(angle = 60)
+
+capture_plots <- ggplot(data = filter(long_data, metric %in% c("CR","IR"),
+                                       category == "grn") |> arrange(strain), 
+       aes(x = strain, y = avg_rate, color = strain)) +
+  xlab("strain Exposed to Prior to Experiment") +
+  ylab("Rate (μg/mg AFDW/h)") +
+  geom_boxplot(width = .7 , fill = NA, position = position_dodge(width = 0.75)) +
+  facet_wrap(~metric, labeller = as_labeller(metric.labs), nrow =2) +
+  #scale_y_continuous(breaks = c(0,.05,.10,.15)) +
+  geom_errorbar(aes(ymin = avg_rate - sd_rate, ymax = avg_rate + sd_rate), width = 0.3, position = position_dodge(width = 0.75)) +
+  scale_color_manual("", values = c("mixed" = "orange2",
+                                               "chlamy" = "chartreuse4"),
+                                labels = c("mixed" = "Chlamydomonas in Mixed Treatment",
+                                           "chlamy" = "Chlamydomonas alone")) +
+  theme_pubclean(base_size = 12) +
+  #geom_text(aes(label = Letters, x = strain, y = avg_IRB + sd_IRB + 0.01), check_overlap = T) +
+  rotate_x_text(angle = 60)
+
+combined_barplots <- ggarrange(common.legend = T, legend = "bottom", ncol = 2, labels = "AUTO", clearance_plots, capture_plots)
+labeled_plots <- annotate_figure(combined_barplots, top = text_grob("Quagga Mussel Grazing on <80μm C. oblonga", 
+               color = "white", face = "bold", size = 12))
+
+ggsave('./figures/grazing_rates/chlamy_feeding_2023.png',labeled_plots,
+       width = 250, height = 200, 
+       units = "mm", dpi = 450 )
+
+#Feeding on microcystis first look barplots.
+blugrn_clearance_plots <- ggplot(data = filter(long_data, metric %in% c("FR","FI")) |> arrange(strain), 
+       aes(x = strain, y = avg_rate, color = category)) +
+  ylab("Rate (mL/mg AFDW/h)") +
+  xlab("Lake Erie Cyanobacteria Strain") +
+  geom_boxplot(width = .7 , fill = NA, position = position_dodge(width = 0.75)) +
+  facet_wrap(~metric, labeller = as_labeller(metric.labs), nrow =2) +
+  #scale_y_continuous(breaks = c(0,5,10,15,20)) +
+  geom_errorbar(aes(ymin = avg_rate - sd_rate, ymax = avg_rate + sd_rate), width = 0.3, position = position_dodge(width = 0.75)) +
+  scale_color_manual("", values = c("blugrn" = "#3399FF",
+                                               "grn" = "orange2",
+                                    'total_chla' = 'gray70'),
+                                labels = c("blugrn" = "Cyanobacteria",
+                                           "grn" = "Green Algae",
+                                           'total_chla' = "Total Chlorophyll-A")) +
+  theme_pubclean(base_size = 12) +
+  theme(axis.title.x = ggtext::element_markdown(),
+        legend.position = 'bottom',
+        legend.text = ggtext::element_markdown()) +
+  rotate_x_text(angle = 60)
+
+blugrn_capture_plots <- ggplot(data = filter(long_data, metric %in% c("CR","IR")) |> arrange(strain), 
+       aes(x = strain, y = avg_rate, color = category)) +
+  ylab("Rate (μg/mg AFDW/h)") +
+  xlab("Lake Erie Cyanobacteria Strain") +
+  geom_boxplot(width = .7 , fill = NA, position = position_dodge(width = 0.75)) +
+  facet_wrap(~metric, labeller = as_labeller(metric.labs), nrow =2) +
+  #scale_y_continuous(breaks = c(0,.05,.10,.15)) +
+  geom_errorbar(aes(ymin = avg_rate - sd_rate, ymax = avg_rate + sd_rate), width = 0.3, position = position_dodge(width = 0.75)) +
+  scale_color_manual("", values = c("blugrn" = "#3399FF",
+                                               "grn" = "orange2",
+                                    'total_chla' = 'gray70'),
+                                labels = c("blugrn" = "Cyanobacteria",
+                                           "grn" = "Green Algae",
+                                           'total_chla' = "Total Chlorophyll-A")) +
+  theme_pubclean(base_size = 12) +
+  theme(axis.title.x = ggtext::element_markdown(),
+        legend.position = 'bottom',
+        legend.text = ggtext::element_markdown()) +
+  rotate_x_text(angle = 60)
+
+combined_barplots <- ggarrange(common.legend = T, legend = "bottom", ncol = 2, labels = "AUTO", blugrn_clearance_plots, blugrn_capture_plots)
+
+labeled_plots <- annotate_figure(combined_barplots, top = text_grob("Quagga Mussel Grazing on <80μm Green Algae and Cyanobacteria", 
+               color = "white", face = "bold", size = 12))
+
+ggsave('./figures/grazing_rates/clearance_rates.png',labeled_plots,
+       width = 250, height = 200, 
+       units = "mm", dpi = 450 )
+
+#Calculate mean, sd, se in prep for plotting.
+plotting_data <- combined_data |>
+  group_by(Treatment, strain, category) |>
+    #Average the clearance and ingestion rates for each fraction. Using across() saves us from doing the renaming ourselves
+  summarise(across(c(CR,IR,FI,FR),list(avg = mean,sd = sd , se = ~(sd(.)/sqrt(n()))), .names = "{.fn}_{.col}")) |>
+  inner_join(genotypes) #add toxin data
+```
+
+```{r Stats}
+library(multcompView)
+####Testing Two-Way mixed anova assumptions
+#No significant extreme outliers
+identify_outliers(combined_data,IR) #Pass
+identify_outliers(combined_data,IR) #3 outliers, not extreme
+identify_outliers(combined_data,CR) #Pass
+identify_outliers(combined_data,CR) #2 outliers, not extreme
+
+####Normality tests
+#C. oblonga only treatments
+filter(combined_data, Treatment == "C. oblonga ATM") |>
+  group_by(category) |>
+  shapiro_test(vars = c("FR","FI", "CR","IR")) #Passes normality test
+
+#C. oblonga mixed with LE Microcystis treatments
+filter(combined_data, str_detect(Treatment, "C. oblonga +")) |>
+  group_by(category) |>
+  shapiro_test(vars = c("FR","FI", "CR","IR")) #Passes normality test
+
+#PCC Microcystis strains
+filter(combined_data, !str_detect(Treatment, "C. oblonga")) |>
+  shapiro_test(vars = c("FR","FI", "CR","IR"))#Passes normality test
+
+####Homogeneity of variances
+# filter(combined_data,category == "grn") |>
+#   group_by(strain, Date) |>
+#   levene_test(FR ~ Treatment)
+# 
+# filter(combined_data,category == "grn") |>
+#   group_by(strain, Date) |>
+#   levene_test(FI ~ category)
+# 
+# filter(combined_data, category == "grn") |>
+#   group_by(strain, Date) |>
+#   levene_test(CR ~ Treatment)
+# 
+# filter(combined_data, category == "grn") |>
+#   group_by(strain, Date) |>
+#   levene_test(IR ~ Treatment)
+
+####Anova Tests and pairwise comparisons
+#Between Green algae ingestion and clearance within a treatment
+IR_table_chlamy <- filter(combined_data, category == "grn", ctrl == 'chlamy') |>
+  anova_test(dv = IR, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #No sig difference. Suggests mussels fed on chlamy only treatments in the same way, and incubation with Microcystis and Chlamy together did not change feeding habits.
+
+IR_table_mixed <- filter(combined_data, category == "grn", ctrl == 'mixed') |>
+  anova_test(dv = IR, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
+
+IR_table_both <- filter(combined_data, category == "grn")  |>
+  anova_test(dv = IR, wid = Treatment, between = c(ctrl,strain)) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #No sig difference for group, suggests mussels fed the same on green algae regardless of microcystis being present. Sig difference for strain and group:strain, so feeding differences are dependent on genotype most likely.
+
+pwc_IR_group <- filter(combined_data, category == "grn") |>
+  group_by(strain) |>
+  tukey_hsd(IR ~ ctrl, p.adjust.method = "fdr") |>
+  add_xy_position(x = "strain", group = "ctrl") #In two treatments, the mussels fed BETTER on chlamy in the presence of microcystis. Could this indicate a stockpiling trait? E.g. there won't be favorable food around in a bit, better stock up on the good food.
+
+pwc_IR_culture <- filter(combined_data, category == "grn") |>
+  group_by(ctrl) |>
+  tukey_hsd(IR ~ strain, p.adjust.method = "fdr") |>
+  filter(p.adj.signif != "ns") #Not sure what sig this has
+
+#Get the compact letter display
+anova <- aov(IR ~ strain*ctrl, data = filter(combined_data, category == "grn"))
+tukey <- TukeyHSD(anova)
+tukey_IRG <- multcompLetters4(anova, tukey)
+cld_IRG <- as.data.frame.list(tukey_IRG$`strain:ctrl`)
+
+IR_comparison_chlamy <- ggboxplot(
+ filter(combined_data,category == "grn")|>arrange(strain), x = "ctrl", y = "IR",
+  color = "ctrl", palette = "npg",
+  ylab = "Ingestion Rate (μg/mg/h)",
+  add = "jitter",
+  width = .8,
+  ggtheme = theme_pubclean(base_size = 14)) + 
+  rotate_x_text(angle = 60)
+
+IR_chlamy <- ggboxplot(
+ filter(combined_data,category == "grn")|>arrange(strain), x = "strain", y = "IR",
+  color = "ctrl", palette = "npg",
+  ylab = "Ingestion Rate (μg/mg/h)",
+  add = "jitter",
+  width = .8,
+  ggtheme = theme_pubclean(base_size = 14)) + 
+  rotate_x_text(angle = 60) +
+  labs(color = "Treatment") +
+  stat_pvalue_manual(pwc_IR_group,
+                     label = "p.adj.signif",
+                     hide.ns = T) 
+
+
+FRG_table_chlamy <- filter(combined_data, ctrl == "chlamy")  |>
+  anova_test(dv = FR, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Sig difference in at least one chlamy only treatment, perhaps incubation with Microcystis changes clearance rate, but not the ingestion rate.
+
+FRG_table_mixed <- filter(combined_data, ctrl == "mixed")  |>
+  anova_test(dv = FR, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
+
+FRG_table_both <- filter(combined_data,category == "grn")  |>
+  anova_test(dv = FR, wid = Treatment, between = c(ctrl,strain)) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr")
+
+pwc_FRG_group <- filter(combined_data,category == "grn") |>
+  group_by(strain) |>
+  tukey_hsd(FR ~ ctrl, p.adjust.method = "fdr") |>
+  add_xy_position(x = "strain", group = "ctrl") #LE19-41.2 had significantly higher clearance on chlamy in the mixed treatment
+
+pwc_FRG_culture <- filter(combined_data,category == "grn") |>
+  group_by(group) |>
+  tukey_hsd(FRG ~ strain, p.adjust.method = "fdr") |>
+  filter(p.adj.signif != "ns") #Not sure what significance this has
+
+FRG_chlamy <- ggboxplot(
+ filter(combined_data,category == "grn")|>arrange(strain), x = "strain", y = "FR",
+  color = "ctrl", palette = "npg",
+  ylab = "Clearance Rate on Removed Material (mL/mg AFDW/h)",
+  add = "jitter",
+  width = .8,
+  ggtheme = theme_pubclean(base_size = 14)) + 
+  labs(color = "Treatment") +
+  rotate_x_text(angle = 60) +
+  stat_pvalue_manual(pwc_FRG_group,
+                     label = "p.adj.signif",
+                     hide.ns = T)
+
+FIG_table_chlamy <- filter(combined_data, group == "Chlamy") |>
+  anova_test(dv = FIG, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #No sig difference. Suggests mussels fed on chlamy only treatments in the same way, and incubation with Microcystis and Chlamy together did not change feeding habits.
+
+FIG_table_mixed <- filter(combined_data, group == "Mixed") |>
+  anova_test(dv = FIG, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
+
+FIG_table_both <- filter(combined_data,category == "grn")  |>
+  anova_test(dv = FI, wid = Treatment, between = c(ctrl,strain)) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #No sig difference for group, suggests mussels fed the same on green algae regardless of microcystis being present. Sig difference for strain and group:strain, so feeding differences are dependent on genotype most likely.
+
+pwc_FIG_group <- filter(combined_data,category == "grn") |>
+  group_by(strain) |>
+  tukey_hsd(FIG ~ group, p.adjust.method = "fdr") |>
+  add_xy_position(x = "strain", group = "group") #In two treatments, the mussels fed BETTER on chlamy in the presence of microcystis. 
+
+
+pwc_FIG_culture <- filter(combined_data,category == "grn") |>
+  group_by(group) |>
+  tukey_hsd(FIG ~ strain, p.adjust.method = "fdr") |>
+  filter(p.adj.signif != "ns") #Not sure what sig this has
+
+#Get the compact letter display
+anova <- aov(FI ~ strain*ctrl, data = filter(combined_data,category == "grn"))
+tukey <- TukeyHSD(anova)
+tukey_FIG <- multcompLetters4(anova, tukey)
+cld_FIG <- as.data.frame.list(tukey_FIG$`strain:group`)
+                
+FIG_chlamy <- ggboxplot(
+ filter(combined_data,category == "grn")|>arrange(strain), x = "strain", y = "FIG",
+  color = "group", palette = "npg",
+  ylab = "Ingestion Rate (μg/mg/h)",
+  add = "jitter",
+  width = .8,
+  ggtheme = theme_pubclean(base_size = 14)) + 
+  rotate_x_text(angle = 60) +
+  labs(color = "Treatment") +
+  stat_pvalue_manual(pwc_FIG_group,
+                     label = "p.adj.signif",
+                     hide.ns = T) 
+
+IRG_table_chlamy <- filter(combined_data, group == "Chlamy") |>
+  anova_test(dv = IRG, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #No sig difference. Suggests mussels fed on chlamy only treatments in the same way, and incubation with Microcystis and Chlamy together did not change feeding habits.
+
+IRG_table_mixed <- filter(combined_data, group == "Mixed") |>
+  anova_test(dv = IRG, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
+
+IRG_table_both <- filter(combined_data,category == "grn")  |>
+  anova_test(dv = IRG, wid = Treatment, between = c(group,strain)) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #No sig difference for group, suggests mussels fed the same on green algae regardless of microcystis being present. Sig difference for strain and group:strain, so feeding differences are dependent on genotype most likely.
+
+pwc_IRG_group <- filter(combined_data,category == "grn") |>
+  group_by(strain) |>
+  tukey_hsd(IRG ~ group, p.adjust.method = "fdr") |>
+  add_xy_position(x = "strain", group = "group") #In two treatments, the mussels fed BETTER on chlamy in the presence of microcystis. Could this indicate a stockpiling trait? E.g. there won't be favorable food around in a bit, better stock up on the good food.
+
+
+pwc_IRG_culture <- filter(combined_data,category == "grn") |>
+  group_by(group) |>
+  tukey_hsd(IRG ~ strain, p.adjust.method = "fdr") |>
+  filter(p.adj.signif != "ns") #Not sure what sig this has
+
+#Get the compact letter display
+anova <- aov(IRG ~ strain*group, data = filter(combined_data,category == "grn"))
+tukey <- TukeyHSD(anova)
+tukey_IRG <- multcompLetters4(anova, tukey)
+cld_IRG <- as.data.frame.list(tukey_IRG$`strain:group`)
+                
+IRG_chlamy <- ggboxplot(
+ filter(combined_data,category == "grn")|>arrange(strain), x = "strain", y = "IRG",
+  color = "group", palette = "npg",
+  ylab = "Ingestion Rate (μg/mg/h)",
+  add = "jitter",
+  width = .8,
+  ggtheme = theme_pubclean(base_size = 14)) + 
+  rotate_x_text(angle = 60) +
+  labs(color = "Treatment") +
+  stat_pvalue_manual(pwc_IRG_group,
+                     label = "p.adj.signif",
+                     hide.ns = T) 
+
+
+CRG_table_chlamy <- filter(combined_data, group == "Chlamy")  |>
+  anova_test(dv = CRG, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Sig difference in at least one chlamy only treatment, perhaps incubation with Microcystis changes clearance rate, but not the ingestion rate.
+
+CRG_table_mixed <- filter(combined_data, group == "Mixed")  |>
+  anova_test(dv = CRG, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
+
+CRG_table_both <- filter(combined_data,category == "grn")  |>
+  anova_test(dv = CRG, wid = Treatment, between = c(group,strain)) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr")
+
+pwc_CRG_group <- filter(combined_data,category == "grn") |>
+  group_by(strain) |>
+  tukey_hsd(CRG ~ group, p.adjust.method = "fdr") |>
+  add_xy_position(x = "strain", group = "group") #LE19-41.2 had significantly higher clearance on chlamy in the mixed treatment
+
+pwc_CRG_culture <- filter(combined_data,category == "grn") |>
+  group_by(group) |>
+  tukey_hsd(CRG ~ strain, p.adjust.method = "fdr") |>
+  filter(p.adj.signif != "ns") #Not sure what significance this has
+
+CRG_chlamy <- ggboxplot(
+ filter(combined_data,category == "grn")|>arrange(strain), x = "strain", y = "CRG",
+  color = "group", palette = "npg",
+  ylab = "Capture Rate (μg/mg/h)",
+  add = "jitter",
+  title = "Quagga Mussel Feeding on C. oblonga\nin the Presence of Microcystis",
+  width = .8,
+  ggtheme = theme_pubclean(base_size = 14)) + 
+  labs(color = "Treatment") +
+  stat_pvalue_manual(pwc_CRG_group,
+                     label = "p.adj.signif",
+                     hide.ns = T) +
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+grn_feeding <- ggarrange(common.legend = T, legend = "right",nrow = 2, labels = "AUTO", 
+                     CRG_chlamy, IRG_chlamy)
+
+ggsave('../../figures/mf_results/feeding_rates/green_alga_feeding.png',grn_feeding,width = 180, height = 200, units = "mm", dpi = 450 )
+
+#Bluegreen clearance rates across strains
+FRB_table <- filter(combined_data, group == "Mixed") |>
+  anova_test(dv = FRB, wid = Treatment, between = strain, observed = c(mcy,aer,mcn,apn,mvd,PmNT3,pir)) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Significant, there is at least one treatment where the mussels fed differently on bluegreen vs other exps
+mixed_data <- filter(plotting_data, str_detect(Treatment, '\\+')) |>
+  ungroup() |>
+  dplyr::select(strain, avg_FRB,avg_FIB,avg_CRB,avg_IRB, mcy, aer, mcn, apn, mvd, PmNT3, pir) |>
+  column_to_rownames("strain")
+
+pca <- PCA(mixed_data)
+
+tukey_results <- manova_results %>%
+  summary.aov(test = "tukey")
+
+pwc_FRB_LE <- filter(combined_data, group == "Mixed") |>
+  tukey_hsd(FRB ~ strain, p.adjust.method = "fdr") |>
+  add_xy_position(x = "strain", group = "group") |>
+  arrange("strain")
+
+#Get the compact letter display
+anova <- aov(FRB ~ strain, data = filter(combined_data, group == "Mixed"))
+tukey <- TukeyHSD(anova)
+tukey_FRB <- multcompLetters4(anova, tukey)
+cld_FRB <- as.data.frame.list(tukey_FRB$`strain`) |>
+  rownames_to_column("strain")
+
+value_max_FRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, Treatment) %>% summarize(max_value = max(FRB)) |>
+  left_join(cld_FRB)
+
+FRB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. oblonga +"))|> left_join(cld_FRB) |> arrange(strain), 
+       aes(x = strain, y = avg_FRB)) +
+  ylab("Clearance Rate on Removed Material (mL/mg AFDW/h)") +
+  geom_col(width = .7 , color = 'black', fill = NA) +
+  geom_errorbar(aes(ymin = avg_FRB - se_FRB, ymax = avg_FRB + se_FRB), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  coord_cartesian(ylim = c(0,45)) +
+  geom_text(aes(label = Letters, x = strain, y = avg_FRB + se_FRB + 2), check_overlap = T) +
+  rotate_x_text(angle = 60)
+
+
+FIB_table <- filter(combined_data, group == "Mixed") |>
+  anova_test(dv = FIB, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Significant, there is at least one treatment where the mussels fed differently on bluegreen vs other exps
+
+pwc_FIB_LE <- filter(combined_data, group == "Mixed") |>
+  tukey_hsd(FIB ~ strain, p.adjust.method = "fdr") |>
+  add_xy_position(x = "strain", group = "group") |>
+  arrange("strain")
+
+#Get the compact letter display
+anova <- aov(FIB ~ strain, data = filter(combined_data, group == "Mixed"))
+tukey <- TukeyHSD(anova)
+tukey_FIB <- multcompLetters4(anova, tukey)
+cld_FIB <- as.data.frame.list(tukey_FIB$`strain`) |>
+  rownames_to_column("strain")
+
+value_max_FIB <- filter(combined_data, group == "Mixed") %>% group_by(strain, Treatment) %>% summarize(max_value = max(FIB)) |>
+  left_join(cld_FIB)
+
+FIB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. oblonga +"))|> left_join(cld_FIB) |> arrange(strain), 
+       aes(x = strain, y = avg_FIB)) +
+  ylab("Clearance Rate on Ingested Material (mL/mg AFDW/h)") +
+  geom_col(width = .7 , color = 'black', fill = NA) +
+  geom_errorbar(aes(ymin = avg_FIB - se_FIB, ymax = avg_FIB + se_FIB), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  coord_cartesian(ylim = c(0,45)) +
+  geom_text(aes(label = Letters, x = strain, y = avg_FIB + se_FIB + 2), check_overlap = T) +
+  rotate_x_text(angle = 60)
+
+#Between Bluegreen ingestion across strains
+
+IRB_table <- filter(combined_data, group == "Mixed") |>
+  anova_test(dv = IRB, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") #Significant, there is at least one treatment where the mussels fed differently on bluegreen vs other exps
+
+pwc_IRB_LE <- filter(combined_data, group == "Mixed") |>
+  tukey_hsd(IRB ~ strain, p.adjust.method = "fdr") |>
+  add_xy_position(x = "strain", group = "group") |>
+  arrange("strain")
+
+#Get the compact letter display
+anova <- aov(IRB ~ strain, data = filter(combined_data, group == "Mixed"))
+tukey <- TukeyHSD(anova)
+tukey_IRB <- multcompLetters4(anova, tukey)
+cld_IRB <- as.data.frame.list(tukey_IRB$`strain`) |>
+  rownames_to_column("strain")
+
+value_max_IRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, Treatment) %>% summarize(max_value = max(IRB)) |>
+  left_join(cld_IRB)
+
+IRB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. oblonga +"))|> left_join(cld_IRB) |> arrange(strain), 
+       aes(x = strain, y = avg_IRB)) +
+  ylab("Ingestion Rate (μg/mg/h)") +
+  geom_col(width = .7 , color = 'black', fill = NA) +
+  geom_errorbar(aes(ymin = avg_IRB - se_IRB, ymax = avg_IRB + se_IRB), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  geom_text(aes(label = Letters, x = strain, y = avg_IRB + se_IRB + 0.01), check_overlap = T) +
+  rotate_x_text(angle = 60)
+
+
+CRB_table <- filter(combined_data, group == "Mixed") |>
+  anova_test(dv = CRB, wid = Treatment, between = strain) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr")
+
+pwc_CRB_LE <- filter(combined_data, group == "Mixed") |>
+  tukey_hsd(CRB ~ strain, p.adjust.method = "fdr") |>
+  filter(p.adj.signif != "ns")
+
+#Get the compact letter display
+anova <- aov(CRB ~ strain, data = filter(combined_data, group == "Mixed"))
+tukey <- TukeyHSD(anova)
+tukey_CRB <- multcompLetters4(anova, tukey)
+cld_CRB <- as.data.frame.list(tukey_CRB$`strain`) |>
+  rownames_to_column("strain")
+
+value_max_CRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, Treatment) %>% summarize(max_value = max(CRB)) |>
+  left_join(cld_CRB)
+
+CRB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. oblonga +"))|> left_join(cld_CRB) |> arrange(strain), 
+       aes(x = strain, y = avg_CRB)) +
+  ylab("Clearance Rate (μg/mg/h)") +
+  geom_col(width = .7 , color = 'black', fill = NA) +
+  geom_errorbar(aes(ymin = avg_CRB - se_CRB, ymax = avg_CRB + se_CRB), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  geom_text(aes(label = Letters, x = strain, y = avg_CRB + se_CRB + 0.01), check_overlap = T) +
+  rotate_x_text(angle = 60)
+
+blu_barplots <- ggarrange(common.legend = T, legend = "right",
+                          nrow = 2,ncol = 2, labels = "AUTO", 
+                          FRB_barplot, FIB_barplot, CRB_barplot, IRB_barplot)
+
+ggsave('../../figures/mf_results/feeding_rates/bluegreen_feeding_barplt.png',blu_barplots,width = 400, height = 400, units = "mm", dpi = 450 )
+# ggsave('../../figures/mf_results/feeding_rates/bluegreen_feeding_bxplt.png',blu_bxplts,width = 180, height = 200, units = "mm", dpi = 450 )
+```
+
+```{r Microcystis PCC strain analysis}
+#Between Xenic/Axenic states of microcystis
+PCC_strains <- filter(combined_data, !str_detect(Treatment, "C. oblonga")) |>
+  filter(category == "blugrn") |>
+  mutate(State = case_when(str_detect(Treatment, "Axenic") ~ "Axenic",
+                           T ~ "Xenic"))
+PCC_plotting_data <- PCC_strains |>
+  group_by(Treatment,State,category) |>
+  summarise(across(c(CR,IR,FI,FR),
+                   list(avg = mean,sd = sd , se = ~(sd(.)/sqrt(n()))), .names = "{.fn}_{.col}"))
+
+IR_PCC <- filter(PCC_strains, !str_detect(Treatment, "C. oblonga")) |>
+  anova_test(dv = IR, wid = strain, between = State) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr")
+
+CR_PCC <- filter(PCC_strains, !str_detect(Treatment, "C. oblonga")) |>
+  anova_test(dv = CR, wid = strain, between = State) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr")
+
+FI_PCC <- filter(PCC_strains, !str_detect(Treatment, "C. oblonga")) |>
+  anova_test(dv = FI, wid = strain, between = State) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr")
+
+FR_PCC <- filter(PCC_strains, !str_detect(Treatment, "C. oblonga")) |>
+  anova_test(dv = FR, wid = strain, between = State) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr")
+
+#PCC Microcystis strains. Effect of microbiome on clearance and ingestion rates
+pwc_IR_state <- filter(PCC_strains, !str_detect(Treatment, "C. oblonga")) |>
+  group_by(strain) |>
+  tukey_hsd(IR ~ State, p.adjust.method = "fdr")
+
+pwc_CR_state <- filter(PCC_strains, !str_detect(Treatment, "C. oblonga")) |>
+  group_by(strain) |>
+  tukey_hsd(CR ~ State, p.adjust.method = "fdr")
+
+pwc_FI_state <- filter(PCC_strains, !str_detect(Treatment, "C. oblonga")) |>
+  group_by(strain) |>
+  tukey_hsd(FI ~ State, p.adjust.method = "fdr")
+
+pwc_FR_state <- filter(PCC_strains, !str_detect(Treatment, "C. oblonga")) |>
+  group_by(strain) |>
+  tukey_hsd(FR ~ State, p.adjust.method = "fdr")
+
+#Clearance rate on microcystis removed from water column
+anova_FR <- aov(FR ~ strain*State, data = PCC_strains)
+tukey <- TukeyHSD(anova_FR)
+tukey_FR <- multcompLetters4(anova_FR, tukey)
+cld_FR <- as.data.frame.list(tukey_FR$`strain:State`) |>
+  rownames_to_column("strain") |>
+  separate_wider_delim(strain, ':', names = c('strain','State')) |>
+  unite(col = Treatment, State:strain, sep = ' ')
+
+FR_barplot_PCC <- ggplot(data = PCC_plotting_data |> left_join(cld_FR), 
+       aes(x = Treatment, y = avg_FR)) +
+  ylab("Clerance Rate on Removed Material(mL/mg AFDW/h)") +
+  geom_col(width = .7 , color = 'black', fill = NA) +
+  geom_errorbar(aes(ymin = avg_FR - se_FR, ymax = avg_FR + se_FR), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  geom_text(aes(label = Letters, x = Treatment, y = avg_FR + se_FR + 2), 
+            check_overlap = T) + 
+  coord_cartesian(ylim = c(0,45))+
+  rotate_x_text(angle = 60)
+
+#Clearance rate on microcystis removed from water column and ingested
+anova_FI <- aov(FI ~ strain*State, data = PCC_strains)
+tukey <- TukeyHSD(anova_FI)
+tukey_FI <- multcompLetters4(anova_FI, tukey)
+cld_FI <- as.data.frame.list(tukey_FI$`strain:State`) |>
+  rownames_to_column("strain") |>
+  separate_wider_delim(strain, ':', names = c('strain','State')) |>
+  unite(col = Treatment, State:strain, sep = ' ')
+
+FI_barplot_PCC <- ggplot(data = PCC_plotting_data |> left_join(cld_FI), 
+       aes(x = Treatment, y = avg_FI)) +
+  ylab("Clearance Rate on Ingested Material (mL/mg AFDW/h)") +
+  geom_col(width = .7 , color = 'black', fill = NA) +
+  geom_errorbar(aes(ymin = avg_FI - se_FI, ymax = avg_FI + se_FI), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  geom_text(aes(label = Letters, x = Treatment, y = avg_FI + se_FI + 2), 
+            check_overlap = T) + 
+  coord_cartesian(ylim = c(0,45))+
+  rotate_x_text(angle = 60)
+
+#Ingestion rate of microcystis 
+anova_IR <- aov(IR ~ strain*State, data = PCC_strains)
+tukey <- TukeyHSD(anova_IR)
+tukey_IR <- multcompLetters4(anova_IR, tukey)
+cld_IR <- as.data.frame.list(tukey_IR$`strain:State`) |>
+  rownames_to_column("strain") |>
+  separate_wider_delim(strain, ':', names = c('strain','State')) |>
+  unite(col = Treatment, State:strain, sep = ' ')
+
+IR_barplot_PCC <- ggplot(data = PCC_plotting_data |> left_join(cld_IR), 
+       aes(x = Treatment, y = avg_IR)) +
+  ylab("Ingestion Rate (μg/mg AFDW/h)") +
+  geom_col(width = .7 , color = 'black', fill = NA) +
+  geom_errorbar(aes(ymin = avg_IR - se_IR, ymax = avg_IR + se_IR), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  geom_text(aes(label = Letters, x = Treatment, y = avg_IR + se_IR + 0.01), 
+            check_overlap = T) + 
+  coord_cartesian(ylim = c(0,0.15))+
+  rotate_x_text(angle = 60)
+
+#Clearance rate on microcystis
+anova_CR <- aov(CR ~ strain*State, data = PCC_strains)
+tukey <- TukeyHSD(anova_CR)
+tukey_CR <- multcompLetters4(anova_CR, tukey)
+cld_CR <- as.data.frame.list(tukey_CR$`strain:State`) |>
+  rownames_to_column("strain") |>
+  separate_wider_delim(strain, ':', names = c('strain','State')) |>
+  unite(col = Treatment, State:strain, sep = ' ')
+
+CR_barplot_PCC <- ggplot(data = PCC_plotting_data |> left_join(cld_CR), 
+       aes(x = Treatment, y = avg_CR)) +
+  ylab("Capture Rate (μg/mg AFDW/h)") +
+  geom_col(width = .7 , color = 'black', fill = NA) +
+  geom_errorbar(aes(ymin = avg_CR - se_CR, ymax = avg_CR + se_CR), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  geom_text(aes(label = Letters, x = Treatment, y = avg_CR + se_CR + 0.01), 
+            check_overlap = T) + 
+  coord_cartesian(ylim = c(0,0.15))+
+  rotate_x_text(angle = 60)
+
+PCC_barplots <- ggarrange(common.legend = T, legend = "right",
+                          nrow = 2,ncol = 2, labels = "AUTO", 
+                          FR_barplot_PCC, FI_barplot_PCC, CR_barplot_PCC, IR_barplot_PCC)
+
+ggsave('../../figures/mf_results/feeding_rates/PCC_feeding_barplt.png',PCC_barplots,width = 400, height = 400, units = "mm", dpi = 450 )
+
+#Testing Axenic vs Xenic
+cld_avx <- as.data.frame.list(tukey_FR$`State`) |>
+  rownames_to_column("State") 
+
+avx <- PCC_strains |>
+  pivot_longer(c(FR,FI,CR,IR), names_to = "Rate", values_to = "value") |>
+  select(Rate, value, State,strain) |>
+  mutate(Rate = factor(Rate, levels = c("FR","FI","CR","IR"))) |>
+  group_by(State,Rate) |>
+  dplyr::summarise(across(c(value), list(avg = mean, sd = sd, se= ~sd(.)/sqrt(n())), .names = "{.fn}_{.col}"))
+
+facet.labels <- c("Removed Material","Ingested Material")
+names(facet.labels) <- c("FR","FI")
+avx_PCC1 <- ggplot(data = filter(avx, Rate %in% c("FR","FI")) |> left_join(cld_avx), 
+       aes(x = State, y = avg_value)) +
+  ylab("Clearance Rate (mL/mg AFDW/h)") +
+  facet_wrap(~Rate, labeller = labeller(Rate = facet.labels)) +
+  geom_col(width = .7 , fill = NA, color = 'black', show.legend = F) +
+  geom_errorbar(aes(ymin = avg_value - sd_value, ymax = avg_value + sd_value), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  geom_text(aes(label = Letters, x = State, y = avg_value + sd_value + avg_value*0.1 ), 
+            check_overlap = T) 
+
+facet.labels <- c("Capture","Ingestion")
+names(facet.labels) <- c("CR","IR")
+avx_PCC2 <- ggplot(data = filter(avx, Rate %in% c("CR","IR")) |> left_join(cld_avx), 
+       aes(x = State, y = avg_value)) +
+  ylab("Rate (μg chlA/mg AFDW/h)") +
+  facet_wrap(~Rate, labeller = labeller(Rate = facet.labels) ) +
+  geom_col(width = .7 , fill = NA, color = 'black', show.legend = F) +
+  geom_errorbar(aes(ymin = avg_value - sd_value, ymax = avg_value + sd_value), width = 0.2) +
+  theme_pubclean(base_size = 14) +
+  geom_text(aes(label = Letters, x = State, y = avg_value + sd_value + avg_value*0.1 ), 
+            check_overlap = T) 
+
+PCC_avx_barplots <- ggarrange(common.legend = T, legend = "right",
+                          nrow = 2,ncol = 1, labels = "AUTO",
+                          avx_PCC1, avx_PCC2)
+                          
+ggsave('../../figures/mf_results/feeding_rates/PCC_avx_barplt.png',PCC_avx_barplots,width = 200, height = 200, units = "mm", dpi = 300 )
+#Output PCC_strains as a csv file
+write_csv(PCC_strains, '../../mussel_feeding_data/LE_cultures/PCC_strains.csv')
+write_csv(filter(combined_data, category != "total_chla"), '../../mussel_feeding_data/LE_cultures/LE_strains.csv')
+
+```
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

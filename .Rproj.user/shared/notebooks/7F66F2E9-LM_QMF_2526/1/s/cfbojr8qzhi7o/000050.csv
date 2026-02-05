@@ -1,0 +1,3 @@
+"0",""
+"0","#Check residuals vs fitted plot"
+"0","plot(lm(AFDW ~ length, data = mussel_info))"

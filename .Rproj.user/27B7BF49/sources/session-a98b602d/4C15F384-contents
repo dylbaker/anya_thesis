@@ -1,0 +1,504 @@
+---
+title: "Mussel Tolerance Exp"
+author: "Dylan Baker"
+date: "02-24-25"
+output: html_document
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*.
+
+```{r setup}
+library(rstatix)
+library(ggpubr)
+library(tidyverse)
+library(lubridate)
+library(glue)
+library(readxl)
+library(multcompView)
+library(googlesheets4)
+source("functions.R")
+```
+
+```{r warning=FALSE}
+data <- read_excel("./QMF_012325.xls",skip = 1, col_types =c( 'text',"numeric",'numeric','numeric','numeric','date','text')) |>
+  select(-Datetime) |>
+  filter(!is.na(chlA1_value)) |>
+  rename("well_ID" = `Well ID`) |>
+  pivot_longer(-c(well_ID,Timepoint),names_to = c("category", ".value"),
+               names_pattern = "(.*)\\_(.*)")
+
+#Import plate data with annotations
+map <- read_csv("./QM_map.csv")
+
+#Import fluoroprobe data from mussel feeding exp
+dry_weight <-  read_csv("./QM_DW.csv") |>
+  filter(batch == 3, combustion_efficiency > 0.8) |>
+  mutate(PAW = gut_pa_mass - capsule_mass)
+
+
+data_summary <- data |>
+  inner_join(map) |>
+    mutate(source = case_when(Timepoint == "TF" ~ "Mixed", #Water column is during the experiment while mixed is the final reading.
+                       T ~ "Water Column"),
+           hours = case_when(Timepoint == "T0" ~ 0,
+                            Timepoint == "T1" ~ 0.5,
+                            Timepoint == "T2" ~ 1.0,
+                            Timepoint == "T3" ~ 1.5,
+                            Timepoint == "TF" ~ 1.5),
+           concentration = factor(glue("{concentration}", " μg/L"), levels =  c("3 μg/L", "6 μg/L", "10 μg/L","20 μg/L")),
+           mussel_present = case_when(str_detect(treatment, "NQC") ~ "No Mussel Control",
+                                      T ~ "Mussels Present")
+  )
+  
+ 
+
+#Plotting fluorescence change during a mussel experiment and outputting the file as a png
+ggplot(data = data_summary, aes(x = hours, y = value, shape = source, color = category)) +
+             geom_point(data = filter(data_summary, Timepoint != "TF"),size = 2, 
+                        position = position_dodge(width = 0.025)) +
+             geom_point(data = filter(data_summary, Timepoint == "TF"),size = 2,
+                        position = position_dodge(width = 0.025)) + 
+             stat_smooth(data = filter(data_summary, Timepoint != "TF"), method = "lm",linewidth = 1, se = F) +
+             scale_shape_manual("",
+                                values = c("Mixed" = 17,
+                                           "Water Column" = 16),
+                                labels = c("chlA1" = "chlA1",
+                                           "chlA2" = "chlA2")) +
+             scale_color_manual("", values = c("chlA1" = "cadetblue2",
+                                               "chlA2" = "coral"),
+                                labels = c("chlA1" = "chlA1",
+                                           "chlA2" = "chlA2")) +
+             geom_errorbar(mapping = aes(ymin = value - SD,
+                                         ymax = value + SD), width = 0.025,
+                           position = position_dodge(width = 0.025)) +
+             scale_x_continuous(breaks = c(0,0.50,1,1.5)) +
+             xlab("Time Point (Hours)") +
+             ylab("RFU") +
+             labs(title = ("Quagga Mussel Feeding on Varying Chlamy Concentrations")) +
+             facet_grid(cols = vars(concentration), rows = vars(mussel_present),scales = "free_y") +
+             theme_pubclean() +
+             rotate_x_text(angle = 60) +
+             theme(legend.position = "right")
+    
+    ggsave(glue("chlamy_feeding.png"), width = 180,
+           height = 100, units = 'mm', dpi = 450)
+
+plot_data(data_summary)
+
+```
+
+(From Vanderploeg 2001) C is the mean Chl a concentration in the water column at the end of the experiment in control containers, Z is the Chl a concentration in the water column of an experimental container at the end of the experiment, V is the volume of water in the container during the experiment, n is the number of mussels, and t is the duration of the experiment.
+
+```{r Ash-free dry weight calculations and regressions}
+
+#Linear regression of AFDW and DW of mussel tissue and shell-length
+AFDW_lm <- lm(AFDW~ mussel_length, data = dry_weight)
+cooksd <- cooks.distance(AFDW_lm)
+plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance")  # plot cook's distance
+abline(h = 4*mean(cooksd, na.rm=T), col="red")  # add cutoff line
+text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd>4*mean(cooksd, na.rm=T),names(cooksd),""), col="red")  # add labels
+
+DW_lm <- lm(DW ~ mussel_length, data = dry_weight)
+ML_batch <- lm(mussel_length ~ batch, data = dry_weight)
+
+library(FactoMineR)
+library(factoextra)
+PCA_data <- dry_weight |>
+  dplyr::select(wet_mass, PAW, AFDW, mussel_length, dry_shell_mass, DW)
+pca <- PCA(PCA_data)
+eig.val <- get_eigenvalue(pca)
+var <- get_pca_var(pca)
+fviz_pca_var(pca, col.var = "black")
+fviz_cos2(pca, choice = "var", axes = 1:2)
+fviz_pca_biplot(pca, repel = T,
+                col.var = "#2E9FDF", # Variables color
+                col.ind = "#696969"  # Individuals color
+                )
+
+summary(AFDW_lm) #Adjusted R^2 0.7969 3.85e-07
+summary(DW_lm) #Adjusted R^2 0.8064 2.602e-07
+summary(ML_batch)
+
+dry_weight$AFDW_lm <- AFDW_lm$fitted.values
+dry_weight$DW_lm <- DW_lm$fitted.values
+
+#Check for normality
+shapiro_test(dry_weight$AFDW)
+shapiro_test(dry_weight$DW)
+shapiro_test(dry_weight$mussel_length)
+ggqqplot(dry_weight$mussel_length)
+
+#Check residuals vs fitted plot
+plot(lm(AFDW ~ mussel_length, data = dry_weight))
+plot(lm(DW ~ mussel_length, data = dry_weight))
+plot(lm(DW ~ PAW, data = dry_weight))
+
+AFDW_plot <- ggplot(dry_weight, aes(x = mussel_length, y = AFDW)) +
+  geom_point() +
+  #coord_cartesian(expand = .1) +
+  geom_smooth(method = "lm",
+              formula = y~x, color = "black", level = 0.95, alpha = .15) +
+  labs(y = "Ash-Free Dry Weight (mg)",
+       x = "Mussel Shell Length (mm)") +
+  stat_regline_equation(label.y = 19) +
+  stat_cor(method = "pearson",
+    aes(label = paste(after_stat(rr.label), after_stat(p.label), sep = "~`,`~"))) + 
+  theme_pubr(base_size = 14)
+
+DW_plot <- ggplot(dry_weight, aes(x = mussel_length, y = DW)) +
+  geom_point() +
+  #coord_cartesian(expand = .1) +
+  geom_smooth(method = "lm",
+              formula = y~x, color = "black", level = 0.95, alpha = .15) +
+  labs(y = "Mussel Tissue Dry Weight (mg)",
+       x = "Mussel Shell Length (mm)") +
+  stat_regline_equation(label.y = 21) +
+  stat_cor(method = "pearson",
+    aes(label = paste(after_stat(rr.label), after_stat(p.label), sep = "~`,`~"))) + 
+  theme_pubr(base_size = 14)
+```
+
+```{r Clearance and Ingestion Rates}
+feeding_data <- data_summary |>
+  mutate(V = Volume *1000,
+         VFWC = case_when(Timepoint == 'T0' ~ 1.6, #Volume removed for samples, in mL (increases with every timepoint).
+                          Timepoint == 'T1' ~ 3.2,
+                          Timepoint == 'T2' ~ 4.8,
+                          Timepoint == 'T3' ~ 6.4,
+                          T ~ NA),
+         VFM = V - VFWC,
+         M1AFDW = -17.1098  + 1.3387 * M1, #regression line from model
+         M2AFDW = -17.1098  + 1.3387 * M2,
+         total_AFDW = M1AFDW + M2AFDW,
+         total_C = total_AFDW * 0.524,
+         percent_C = total_C/total_AFDW) |>
+  ungroup()
+
+control_data <- filter(feeding_data, str_detect(treatment, "NQC")) |>
+  select(c(well_ID,category,value,Timepoint,treatment, concentration,V,VFM,VFWC)) |>
+  group_by(category,well_ID) |>
+  mutate(C0 = value[Timepoint == "T0"], #Initial control measurement time T0.
+         CFWC = value[Timepoint == "T3"], #Final control measurement before mixing
+         CFM = value[Timepoint == "TF"]) |>#Final control measurement mixed
+  filter(VFM == 1493.6) |> #Filter out unneeded rows
+  mutate(CFMx = (VFM/V)*CFM+(VFWC/V)*CFWC) |> #Control final corrected for sample volume removed
+  ungroup() |>
+  select(-c(Timepoint,V,VFM,VFWC,treatment,well_ID))
+
+exp_data <- filter(feeding_data, !str_detect(treatment, "NQC")) |>
+  select(well_ID,category,value,Timepoint,treatment, hours,concentration,total_AFDW,V, VFM, VFWC) |>
+  group_by(treatment, category) |>
+  mutate(Z0 = value[Timepoint == "T0"], #Initial measurement time T0.
+         ZFWC = value[Timepoint == "T3"], #Final control measurement before mixing
+         ZFM = value[Timepoint == "TF"]) |> #Final control measurement mixed
+  filter(VFM == 1493.6) |> #Filter out unneeded rows
+  mutate(ZFMx = (VFM/V)*ZFM+(VFWC/V)*ZFWC, #Control final corrected for sample volume removed
+         ZavWC = (Z0-ZFWC)/log(Z0/ZFWC), #Average concentration chla in the water column
+         ZavM = (Z0-ZFM)/log(Z0/ZFM)) |> #Average concentration of bluegreens after mixing
+  ungroup() |>
+  select(-c(Timepoint, value,well_ID))
+
+combined_data <- merge(exp_data, control_data,by= c('concentration', 'category'),all.x = TRUE) |> #Merge control data with exp data.
+  group_by(category) |>
+  mutate(FR = (V/(total_AFDW*hours))*(log(Z0)-log(ZFWC)+log(CFWC)-log(C0)), #Clearance rate on amount removed, includes correction
+         FI = (V/(total_AFDW*hours))*(log(Z0)-log(ZFMx)-log(C0)+log(CFMx)), #Clearance rate on amount ingested, includes correction
+         CR = ZavWC*FR/1000,#Capture rate
+         IR = ZavM*FI/1000, #Ingestion rate
+         ) |>
+  ungroup()
+
+#Change all Inf, NA, NaN values to 0, as these represent treatments where either bluegreen or green were not present. E.g. C. oblonga controls
+combined_data[sapply(combined_data, is.infinite)] <- NA
+combined_data[sapply(combined_data, is.nan)] <- NA
+
+long_data <- combined_data |>
+  select(treatment, category,concentration,
+          FR, #Clearance rates on amount removed mL/mg/h
+          FI, #Clearance rates on amount ingested mL/mg/h
+          CR, #Capture rate or "search" rate
+          IR) |> #Ingestion rate
+  pivot_longer(
+    cols = c(
+          FR, #Clearance rates on amount removed mL/mg/h
+          FI, #Clearance rates on amount ingested mL/mg/h
+          CR, #Capture rate or "search" rate
+          IR) #Ingestion rate
+    ,
+    names_to = c("metric"),
+    values_to = "rate"
+  ) |>
+  filter(!is.na(rate)) |>
+  group_by(metric, category,concentration) |>
+  mutate(metric = factor(metric, levels = c('FI','FR','CR','IR'))) |>
+  dplyr::summarise(across(rate, list(avg = mean, sd = sd), .names = "{.fn}_{.col}"))
+
+#New facet label names for metric variable
+metric.labs <- c(`FR` = "Clearance Rate\n(on amount removed)",
+                    `FI` = "Clearance Rate\n(on amount ingested)",
+                    `CR`= "Capture Rate",
+                    `IR` = "Ingestion Rate")
+#First look at ingestion rate, clearance rate,
+clearance_plots <- ggplot(data = filter(long_data, metric %in% c("FI","FR")) |> arrange(concentration), 
+       aes(x = concentration, y = avg_rate, color = category)) +
+  ylab("Rate (mL/mg AFDW/h)") +
+  ggtitle("Quagga Mussel Grazing on Different Concentrations of Chlamy") +
+  geom_col(width = .5 , fill = NA, position = position_dodge(width = 0.55)) +
+  facet_wrap(~metric, labeller = as_labeller(metric.labs)) +
+  #scale_y_continuous(breaks = c(0,10,20,30,40)) +
+  geom_errorbar(aes(ymin = avg_rate - sd_rate, ymax = avg_rate + sd_rate), width = 0.2, position = position_dodge(width = 0.55)) +
+  scale_color_manual("", values = c("chlA1" = "cadetblue2",
+                                               "chlA2" = "coral")) +
+  theme_pubclean(base_size = 14) +
+  #geom_text(aes(label = Letters, x = Culture, y = avg_IRB + sd_IRB + 0.01), check_overlap = T) +
+  rotate_x_text(angle = 60)
+
+capture_plots <- ggplot(data = filter(long_data, metric %in% c("CR","IR")) |> arrange(concentration), 
+       aes(x = concentration, y = avg_rate, color = category)) +
+  ylab("Rate (μg/mg AFDW/h)") +
+  #geom_boxplot(fill = NA, position = position_dodge(width = 0.55), width = .5)
+  geom_col(width = .5 , fill = NA, position = position_dodge(width = 0.55)) +
+  facet_wrap(~metric, labeller = as_labeller(metric.labs)) +
+  geom_errorbar(aes(ymin = avg_rate - sd_rate, ymax = avg_rate + sd_rate), width = 0.2, position = position_dodge(width = 0.55)) +
+  scale_color_manual("", values = c("chlA1" = "cadetblue2",
+                                               "chlA2" = "coral")) +
+  theme_pubclean(base_size = 14) +
+  #geom_text(aes(label = Letters, x = Culture, y = avg_IRB + sd_IRB + 0.01), check_overlap = T) +
+  rotate_x_text(angle = 60)
+
+combined_barplots <- ggarrange(common.legend = T, legend = "right", nrow = 2, labels = "AUTO", clearance_plots, capture_plots)
+
+ggsave('./all_rates_barplt.png',combined_barplots,
+       width = 250, height = 200, 
+       units = "mm", dpi = 450 )
+
+#Calculate mean, sd, se in prep for plotting.
+plotting_data <- filter(combined_data,!is.na(CR)) |>
+  group_by(Date,category) |>
+    #Average the clearance and ingestion rates for each fraction. Using across() saves us from doing the renaming ourselves
+  summarise(across(c(CR,IR,FR,FI),list(avg = mean,sd = sd , se = ~ (sd(.x)/sqrt(n()))), .names = "{.fn}_{.col}")) |>
+  ungroup()
+```
+
+
+```{r Stats}
+####Testing Two-Way mixed anova assumptions
+#No significant extreme outliers
+identify_outliers(combined_data,IR) #1 outlier, not extreme
+identify_outliers(combined_data,CR) #No outliers
+identify_outliers(combined_data,FR) #3 outliers, 1 extreme
+identify_outliers(combined_data,FI) #1 outlier, not extreme
+
+####Normality tests, should be p≥0.05 to assume normality
+combined_data |>
+  shapiro_test(vars = c("CR","IR","FR","FI")) #Only CR passed normality test
+
+####Homogeneity of variances
+combined_data |>
+  levene_test(CR ~ category) #pass
+
+combined_data |>
+  levene_test(IR ~ category) #pass
+
+combined_data |>
+  levene_test(FR ~ category) #pass
+
+combined_data |>
+  levene_test(FI ~ category) #pass
+
+####Anova Tests and pairwise comparisons
+#Between clearance, capture, and ingestion rates across dates and algae classes.
+CR_table <- filter(combined_data, !is.na(CR)) |>
+  anova_test(CR ~ Date*category) |>
+  #anova_test(dv = CR, between = 'Date', wid = 'Treatment') |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr")  
+
+IR_table <- filter(combined_data, !is.na(IR)) |>
+  anova_test(IR ~ Date*category) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") 
+
+FR_table <- filter(combined_data, !is.na(FR)) |>
+  anova_test(FR ~ Date*category) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") 
+
+FI_table <- FI_table <- filter(combined_data, !is.na(FI)) |>
+  anova_test(FI ~ Date*category) |>
+  get_anova_table() |>
+  adjust_pvalue(method = "fdr") 
+
+#Pairwise comparisons
+pwc_IR_cat <- filter(combined_data, !is.na(IR), category != "total") |>
+  group_by(Date) |>
+  tukey_hsd(IR ~ category, p.adjust.method = "fdr") |>
+  filter(p.adj <= 0.05)
+  
+pwc_CR_cat <- filter(combined_data, !is.na(CR), category != "total") |>
+  tukey_hsd(CR ~ Date:category, p.adjust.method = "fdr") |>
+  filter(p.adj <= 0.05)
+  
+pwc_FR_cat<- filter(combined_data, !is.na(FR), category != "total") |>
+  tukey_hsd(FR ~ Date:category, p.adjust.method = "fdr") |>
+  filter(p.adj <= 0.05)
+  
+pwc_FI_cat <- filter(combined_data, !is.na(FI), category != "total") |>
+  tukey_hsd(FI ~ Date:category, p.adjust.method = "fdr") |>
+  filter(p.adj <= 0.05) 
+
+
+anova <- aov(FR ~ Date*category, data = filter(combined_data, !is.na(FR)))
+tukey <- TukeyHSD(anova)
+tukey$`Date:category`[!complete.cases(tukey$`Date:category`),] <- 0 #Wont work with NA values, so they must be changed to 0.
+tukey_FR <- multcompLetters4(anova, tukey)
+cld_FR<- as.data.frame.list(tukey_FR$`Date:category`) |>
+  rownames_to_column("category") |>
+  separate_wider_delim(cols = category, delim = ":", names = c("Date", "category")) |>
+  mutate(Date = factor(Date,levels = c("Jul_2023","Aug_2023","Sep_2023")))
+
+value_max_FR <- filter(combined_data, !is.na(FR)) |> group_by(category) |> summarize(max_value = max(FR)) |>
+  left_join(cld_FR)
+
+FR_barplot <- ggplot(data = plotting_data |> left_join(cld_FR), 
+       aes(x = Date,
+           y = avg_FR, color = category)) +
+  ylab("Clearance Rate on Amount Removed\n(mL/mg AFDW/h)") +
+  geom_col(width = .5 ,fill = NA, position = position_dodge(0.55)) +
+  scale_y_continuous(breaks = c(0,10,20,30,40)) +
+  coord_cartesian(ylim = c(0,55)) +
+  geom_errorbar(aes(ymin = avg_FR - sd_FR, ymax = avg_FR + sd_FR), width = 0.2, position = position_dodge(0.55)) +
+  scale_color_manual("", values = c("blugrn" = "cadetblue2",
+                                               "grn" = "chartreuse2",
+                                               "diatom" = "coral",
+                                               "crypto" = "gold",
+                                               "total" = "gray50"),
+                                labels = c("blugrn" = "Bluegreen",
+                                           "grn" = "Green Algae",
+                                           "diatom" = "Diatoms",
+                                           "crypto" = "Cryptophyta",
+                                           "total" = "Total Chlorophyll")) +
+  geom_text(aes(label = Letters, color = 'black', x = Date, y = avg_FR + sd_FR + 1, group = category),
+            position = position_dodge(0.55),show.legend = F, check_overlap = T) +
+  theme_pubclean(base_size = 14) +
+  rotate_x_text(angle = 60)
+
+anova <- aov(FI ~ Date*category, data = filter(combined_data, !is.na(FI)))
+tukey <- TukeyHSD(anova)
+tukey$`Date:category`[!complete.cases(tukey$`Date:category`),] <- 0 #Wont work with NA values, so they must be changed to 0.
+tukey_FI <- multcompLetters4(anova, tukey)
+cld_FI<- as.data.frame.list(tukey_FI$`Date:category`) |>
+  rownames_to_column("category") |>
+  separate_wider_delim(cols = category, delim = ":", names = c("Date", "category"))|>
+  mutate(Date = factor(Date,levels = c("Jul_2023","Aug_2023","Sep_2023")))
+
+
+value_max_FI <- filter(combined_data, !is.na(FI)) %>% group_by(category) %>% summarize(max_value = max(FI)) |>
+  left_join(cld_FI)
+
+FI_barplot <- ggplot(data = plotting_data|> left_join(cld_FI), 
+       aes(x = Date, 
+           y = avg_FI, 
+           color = category)) +
+  ylab("Clearance Rate on Amount Ingested\n(mL/mg AFDW/h)") +
+  geom_col(width = .5 ,fill = NA, position = position_dodge(0.55)) +
+  scale_y_continuous(breaks = c(0,10,20,30,40)) +
+  coord_cartesian(ylim = c(0,55)) +
+  geom_errorbar(aes(ymin = avg_FI - sd_FI, ymax = avg_FI + sd_FI), width = 0.2, position = position_dodge(0.55)) +
+  scale_color_manual("", values = c("blugrn" = "cadetblue2",
+                                               "grn" = "chartreuse2",
+                                               "diatom" = "coral",
+                                               "crypto" = "gold",
+                                               "total" = "gray50"),
+                                labels = c("blugrn" = "Bluegreen",
+                                           "grn" = "Green Algae",
+                                           "diatom" = "Diatoms",
+                                           "crypto" = "Cryptophyta",
+                                           "total" = "Total Chlorophyll")) +
+  geom_text(aes(label = Letters, color = 'black', x = Date, y = avg_FI + sd_FI + 1, group = category),
+            position = position_dodge(0.55),show.legend = F, check_overlap = T) +
+  theme_pubclean(base_size = 14) +
+  rotate_x_text(angle = 60)
+
+#Ingestion and Capture Rate Barplots
+anova <- aov(IR ~ Date*category, data = filter(combined_data, !is.na(IR)))
+tukey <- TukeyHSD(anova)
+tukey$`Date:category`[!complete.cases(tukey$`Date:category`),] <- 0 #Wont work with NA values, so they must be changed to 0.
+tukey_IR <- multcompLetters4(anova, tukey)
+cld_IR<- as.data.frame.list(tukey_IR$`Date:category`) |>
+  rownames_to_column("category") |>
+  separate_wider_delim(cols = category, delim = ":", names = c("Date", "category"))|>
+  mutate(Date = factor(Date,levels = c("Jul_2023","Aug_2023","Sep_2023")))
+
+value_max_IR <- filter(combined_data, !is.na(IR)) %>% group_by(category) %>% summarize(max_value = max(IR)) |>
+  left_join(cld_IR)
+
+IR_barplot <- ggplot(data = plotting_data |> left_join(cld_IR), 
+       aes(x = Date, y = avg_IR, color = category)) +
+  ylab("Ingestion Rate (μg/mg AFDW/h)") +
+  geom_col(width = .5 ,fill = NA, position = position_dodge(0.55)) +
+  coord_cartesian(ylim = c(0,0.05)) +
+  geom_errorbar(aes(ymin = avg_IR - sd_IR, ymax = avg_IR + sd_IR), width = 0.2, position = position_dodge(0.55)) +
+  scale_color_manual("", values = c("blugrn" = "cadetblue2",
+                                               "grn" = "chartreuse2",
+                                               "diatom" = "coral",
+                                               "crypto" = "gold",
+                                               "total" = "gray50"),
+                                labels = c("blugrn" = "Bluegreen",
+                                           "grn" = "Green Algae",
+                                           "diatom" = "Diatoms",
+                                           "crypto" = "Cryptophyta",
+                                           "total" = "Total Chlorophyll")) +
+  geom_text(aes(label = Letters, color = 'black', x = Date, y = avg_IR + sd_IR + 0.0025, group = category),
+            position = position_dodge(0.55),show.legend = F, check_overlap = T) +
+  theme_pubclean(base_size = 14) +
+  rotate_x_text(angle = 60)
+
+anova <- aov(CR ~ Date*category, data = filter(combined_data, !is.na(CR)))
+tukey <- TukeyHSD(anova)
+tukey$`Date:category`[!complete.cases(tukey$`Date:category`),] <- 0 #Wont work with NA values, so they must be changed to 0.
+tukey_CR <- multcompLetters4(anova, tukey)
+cld_CR<- as.data.frame.list(tukey_CR$`Date:category`) |>
+  rownames_to_column("category") |>
+  separate_wider_delim(cols = category, delim = ":", names = c("Date", "category"))|>
+  mutate(Date = factor(Date,levels = c("Jul_2023","Aug_2023","Sep_2023")))
+
+value_max_CR <- filter(combined_data, !is.na(CR)) %>% group_by(category) %>% summarize(max_value = max(CR)) |>
+  left_join(cld_CR)
+
+CR_barplot <- ggplot(data = plotting_data|> left_join(cld_CR), 
+       aes(x = Date,
+           y = avg_CR, color = category)) +
+  ylab("Capture Rate (μg/mg AFDW/h)") +
+  geom_col(width = .5 ,fill = NA, position = position_dodge(0.55)) +
+  coord_cartesian(ylim = c(0,0.05)) +
+  geom_errorbar(aes(ymin = avg_CR - sd_CR, ymax = avg_CR + sd_CR), width = 0.2, position = position_dodge(0.55)) +
+  scale_color_manual("", values = c("blugrn" = "cadetblue2",
+                                               "grn" = "chartreuse2",
+                                               "diatom" = "coral",
+                                               "crypto" = "gold",
+                                               "total" = "gray50"),
+                                labels = c("blugrn" = "Bluegreen",
+                                           "grn" = "Green Algae",
+                                           "diatom" = "Diatoms",
+                                           "crypto" = "Cryptophyta",
+                                           "total" = "Total Chlorophyll")) +
+  geom_text(aes(label = Letters, color = 'black', x = Date, y = avg_CR + sd_CR + 0.0025, group = category),
+            position = position_dodge(0.55),show.legend = F, check_overlap = T) +
+  theme_pubclean(base_size = 14) +
+  rotate_x_text(angle = 60)
+
+barplots <- ggarrange(common.legend = T, legend = "bottom",nrow = 2,ncol = 2, labels = "AUTO", 
+                     FR_barplot, FI_barplot, CR_barplot, IR_barplot)
+
+ggsave('./figures/summer23/all_rates_w_sig.png',barplots,width = 200, height = 250, units = "mm", dpi = 450)
+
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
