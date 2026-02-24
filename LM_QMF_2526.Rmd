@@ -433,7 +433,7 @@ plotting_data <- combined_data |>
   summarise(across(c(CR,IR,FI,FR),list(avg = mean,sd = sd , se = ~(sd(.)/sqrt(n()))), .names = "{.fn}_{.col}")) #|>
   #inner_join(strain_info) #add strain data here
 ```
-
+Could condese below code even further by doing a pivot_wider on combined data to make IR,FR,CR,IR into a "rate" column and then run a for loop on that column and the category column to codense all of this.
 ```{r Stats}
 library(multcompView)
 ####Testing Two-Way mixed anova assumptions
@@ -478,7 +478,7 @@ IR_table <- filter(combined_data, category == "grn") |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") 
 
-pwc_IR_culture <- combined_data |>
+pwc_IR_strain <- combined_data |>
   group_by(category) |>
   tukey_hsd(IR ~ strain, p.adjust.method = "fdr") |> #Swap out strain for species if wanting to look at broader trends
   filter(p.adj.signif != "ns") |>
@@ -493,7 +493,13 @@ for (cat in categories) {
   aov_cat <- aov(IR ~ strain, data = data_cat)
   tukey_cat <- TukeyHSD(aov_cat)
   cld_cat <- multcompLetters4(aov_cat, tukey_cat)
-  cld_list[[as.character(cat)]] <- as.data.frame.list(cld_cat$`strain`)
+  
+# Convert CLD table to dataframe with strain as a column
+  df <- as.data.frame.list(cld_cat$`strain`)
+  df <- rownames_to_column(df, var = "strain")
+  df$category <- cat
+  
+  cld_list[[cat]] <- df
 }
 
 cld_combined <- bind_rows(
@@ -504,19 +510,21 @@ cld_combined <- bind_rows(
   })
 )
 
-IR_plot <- ggboxplot(
- combined_data|>arrange(strain), x = "strain", y = "IR",
-  color = "category", palette = "npg",
-  ylab = "Ingestion Rate (μg/mg/h)",
-  add = "jitter",
-  width = .8,
-  ggtheme = theme_pubclean(base_size = 14)) + 
-  rotate_x_text(angle = 60) +
-  labs(color = "treatment") +
-  stat_pvalue_manual(pwc_IR_culture,
-                     label = "p.adj.signif",
-                     hide.ns = T) 
-
+IR_barplot <- ggplot(data = plotting_data |> left_join(cld_combined) |> arrange(strain), aes(x = strain, y = avg_IR, color = category)) +
+  ylab("Ingestion Rate (μg chlA/mg AFDW/h)") +
+  geom_col(width = .7 , fill = NA, position = position_dodge(width = 0.75)) +
+  scale_color_manual("", values = c("blugrn" = "#3399FF",
+                                               "grn" = "orange2",
+                                    'total_chla' = 'gray70'),
+                                labels = c("blugrn" = "Cyanobacteria",
+                                           "grn" = "Green Algae",
+                                           'total_chla' = "Total Chlorophyll-A")) +
+  geom_errorbar(aes(ymin = avg_IR - se_IR, ymax = avg_IR + se_IR),
+                width = 0.2, position = position_dodge(width = 0.75)) +
+  theme_pubclean(base_size = 14) +
+  geom_text(aes(label = Letters, x = strain, y = avg_IR + se_IR + 0.01),
+                position = position_dodge(width = 0.75), check_overlap = T) +
+  rotate_x_text(angle = 60)
 
 FRG_table_chlamy <- filter(combined_data, ctrl == "chlamy")  |>
   anova_test(dv = FR, wid = treatment, between = strain) |>
@@ -786,14 +794,6 @@ cld_IRB <- as.data.frame.list(tukey_IRB$`strain`) |>
 value_max_IRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, treatment) %>% summarize(max_value = max(IRB)) |>
   left_join(cld_IRB)
 
-IRB_barplot <- ggplot(data = filter(plotting_data, str_detect(treatment, "C. oblonga +"))|> left_join(cld_IRB) |> arrange(strain), 
-       aes(x = strain, y = avg_IRB)) +
-  ylab("Ingestion Rate (μg/mg/h)") +
-  geom_col(width = .7 , color = 'black', fill = NA) +
-  geom_errorbar(aes(ymin = avg_IRB - se_IRB, ymax = avg_IRB + se_IRB), width = 0.2) +
-  theme_pubclean(base_size = 14) +
-  geom_text(aes(label = Letters, x = strain, y = avg_IRB + se_IRB + 0.01), check_overlap = T) +
-  rotate_x_text(angle = 60)
 
 
 CRB_table <- filter(combined_data, group == "Mixed") |>
@@ -828,7 +828,7 @@ blu_barplots <- ggarrange(common.legend = T, legend = "right",
                           nrow = 2,ncol = 2, labels = "AUTO", 
                           FRB_barplot, FIB_barplot, CRB_barplot, IRB_barplot)
 
-ggsave('../../figures/mf_results/feeding_rates/bluegreen_feeding_barplt.png',blu_barplots,width = 400, height = 400, units = "mm", dpi = 450 )
+# ggsave('../../figures/mf_results/feeding_rates/bluegreen_feeding_barplt.png',blu_barplots,width = 400, height = 400, units = "mm", dpi = 450 )
 # ggsave('../../figures/mf_results/feeding_rates/bluegreen_feeding_bxplt.png',blu_bxplts,width = 180, height = 200, units = "mm", dpi = 450 )
 ```
 
