@@ -24,6 +24,7 @@ library(glue)
 library(readxl)
 library(googlesheets4)
 library(ggnewscale)
+library(MASS)
 
 #Which functions that are preferred to be used if there is a conflict
 conflicts_prefer(dplyr::select, dplyr::mutate, dplyr::rename, dplyr::filter, dplyr::arrange)
@@ -134,18 +135,11 @@ fp_summary <- fp_data %>%
          rep = case_when(str_detect(Treatment, "Q") ~ str_extract(Treatment, "Q\\d"),
                          T ~ "C"),
          treatment = paste0(strain,rep)) |>
-  select(-Treatment)
+  select(-Treatment) |>
+  inner_join(strain_info) ### Insert strain info dataframe here
 
 
 treatment <- filter(fp_summary, rep != "C")
-
-#There was a lag between T0 and T1 because of waiting for mussels to open. This corrects that issue.
-# t0_correct <- filter(fp_summary, Timepoint %in% c("T0")) |>
-#   select(-avg_time) |>
-#   filter(str_detect(treatment, "Q")) |>
-#   inner_join(map, by = c('treatment', 'Date')) |>
-#   select(treatment,category,avg_chla,sd_chla,avg_time,strain, rep, Timepoint,Date,avg_time) |>
-#   unique()
 
 mussel_open_time <- map |>
   select(treatment,Date,open_time1,open_time2,volume,UPF,,M1, M2)
@@ -171,7 +165,7 @@ full_data <- fp_summary |>
  
 split_df <- split(full_data, f = list(full_data$strain),drop = T,sep = '_')
 
-plot_fp_data(split_df)
+#plot_fp_data(split_df)
 ```
 
 (From Vanderploeg 2001) C is the mean Chl a concentration in the water column at the end of the experiment in control containers, Z is the Chl a concentration in the water column of an experimental container at the end of the experiment, V is the volume of water in the container during the experiment, n is the number of mussels, and t is the duration of the experiment.
@@ -434,10 +428,10 @@ ggsave('./figures/grazing_rates/clearance_rates.png',labeled_plots,
 
 #Calculate mean, sd, se in prep for plotting.
 plotting_data <- combined_data |>
-  group_by(Treatment, strain, category) |>
+  group_by(strain, category) |>
     #Average the clearance and ingestion rates for each fraction. Using across() saves us from doing the renaming ourselves
-  summarise(across(c(CR,IR,FI,FR),list(avg = mean,sd = sd , se = ~(sd(.)/sqrt(n()))), .names = "{.fn}_{.col}")) |>
-  inner_join(genotypes) #add toxin data
+  summarise(across(c(CR,IR,FI,FR),list(avg = mean,sd = sd , se = ~(sd(.)/sqrt(n()))), .names = "{.fn}_{.col}")) #|>
+  #inner_join(strain_info) #add strain data here
 ```
 
 ```{r Stats}
@@ -451,104 +445,91 @@ identify_outliers(combined_data,CR) #2 outliers, not extreme
 
 ####Normality tests
 #C. oblonga only treatments
-filter(combined_data, Treatment == "C. oblonga ATM") |>
-  group_by(category) |>
-  shapiro_test(vars = c("FR","FI", "CR","IR")) #Passes normality test
-
-#C. oblonga mixed with LE Microcystis treatments
-filter(combined_data, str_detect(Treatment, "C. oblonga +")) |>
+filter(combined_data, strain == "C") |>
   group_by(category) |>
   shapiro_test(vars = c("FR","FI", "CR","IR")) #Passes normality test
 
 #PCC Microcystis strains
-filter(combined_data, !str_detect(Treatment, "C. oblonga")) |>
+filter(combined_data, !str_detect(strain, "C")) |>
+  group_by(category) |>
   shapiro_test(vars = c("FR","FI", "CR","IR"))#Passes normality test
 
 ####Homogeneity of variances
-# filter(combined_data,category == "grn") |>
-#   group_by(strain, Date) |>
-#   levene_test(FR ~ Treatment)
-# 
-# filter(combined_data,category == "grn") |>
-#   group_by(strain, Date) |>
-#   levene_test(FI ~ category)
-# 
-# filter(combined_data, category == "grn") |>
-#   group_by(strain, Date) |>
-#   levene_test(CR ~ Treatment)
-# 
-# filter(combined_data, category == "grn") |>
-#   group_by(strain, Date) |>
-#   levene_test(IR ~ Treatment)
+filter(combined_data) |>
+  group_by(category) |>
+  levene_test(FR~strain)
+
+filter(combined_data) |>
+  group_by(category) |>
+  levene_test(FI~strain)
+
+filter(combined_data) |>
+  group_by(category) |>
+  levene_test(CR~strain)
+
+filter(combined_data) |>
+  group_by(category) |>
+  levene_test(IR~strain)
 
 ####Anova Tests and pairwise comparisons
 #Between Green algae ingestion and clearance within a treatment
-IR_table_chlamy <- filter(combined_data, category == "grn", ctrl == 'chlamy') |>
-  anova_test(dv = IR, wid = Treatment, between = strain) |>
+IR_table <- filter(combined_data, category == "grn") |>
+  anova_test(dv = IR, wid = treatment, between = strain) |>
   get_anova_table() |>
-  adjust_pvalue(method = "fdr") #No sig difference. Suggests mussels fed on chlamy only treatments in the same way, and incubation with Microcystis and Chlamy together did not change feeding habits.
+  adjust_pvalue(method = "fdr") 
 
-IR_table_mixed <- filter(combined_data, category == "grn", ctrl == 'mixed') |>
-  anova_test(dv = IR, wid = Treatment, between = strain) |>
-  get_anova_table() |>
-  adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
+pwc_IR_culture <- combined_data |>
+  group_by(category) |>
+  tukey_hsd(IR ~ strain, p.adjust.method = "fdr") |> #Swap out strain for species if wanting to look at broader trends
+  filter(p.adj.signif != "ns") |>
+   add_xy_position(x = "strain") 
 
-IR_table_both <- filter(combined_data, category == "grn")  |>
-  anova_test(dv = IR, wid = Treatment, between = c(ctrl,strain)) |>
-  get_anova_table() |>
-  adjust_pvalue(method = "fdr") #No sig difference for group, suggests mussels fed the same on green algae regardless of microcystis being present. Sig difference for strain and group:strain, so feeding differences are dependent on genotype most likely.
+#Get the compact letter display in a list
+categories <- unique(combined_data$category)
+cld_list <- list()
 
-pwc_IR_group <- filter(combined_data, category == "grn") |>
-  group_by(strain) |>
-  tukey_hsd(IR ~ ctrl, p.adjust.method = "fdr") |>
-  add_xy_position(x = "strain", group = "ctrl") #In two treatments, the mussels fed BETTER on chlamy in the presence of microcystis. Could this indicate a stockpiling trait? E.g. there won't be favorable food around in a bit, better stock up on the good food.
+for (cat in categories) {
+  data_cat <- combined_data |> filter(category == cat)
+  aov_cat <- aov(IR ~ strain, data = data_cat)
+  tukey_cat <- TukeyHSD(aov_cat)
+  cld_cat <- multcompLetters4(aov_cat, tukey_cat)
+  cld_list[[as.character(cat)]] <- as.data.frame.list(cld_cat$`strain`)
+}
 
-pwc_IR_culture <- filter(combined_data, category == "grn") |>
-  group_by(ctrl) |>
-  tukey_hsd(IR ~ strain, p.adjust.method = "fdr") |>
-  filter(p.adj.signif != "ns") #Not sure what sig this has
+cld_combined <- bind_rows(
+  lapply(names(cld_list), function(cat) {
+    df <- cld_list[[cat]]
+    df$category <- cat
+    df
+  })
+)
 
-#Get the compact letter display
-anova <- aov(IR ~ strain*ctrl, data = filter(combined_data, category == "grn"))
-tukey <- TukeyHSD(anova)
-tukey_IRG <- multcompLetters4(anova, tukey)
-cld_IRG <- as.data.frame.list(tukey_IRG$`strain:ctrl`)
-
-IR_comparison_chlamy <- ggboxplot(
- filter(combined_data,category == "grn")|>arrange(strain), x = "ctrl", y = "IR",
-  color = "ctrl", palette = "npg",
-  ylab = "Ingestion Rate (μg/mg/h)",
-  add = "jitter",
-  width = .8,
-  ggtheme = theme_pubclean(base_size = 14)) + 
-  rotate_x_text(angle = 60)
-
-IR_chlamy <- ggboxplot(
- filter(combined_data,category == "grn")|>arrange(strain), x = "strain", y = "IR",
-  color = "ctrl", palette = "npg",
+IR_plot <- ggboxplot(
+ combined_data|>arrange(strain), x = "strain", y = "IR",
+  color = "category", palette = "npg",
   ylab = "Ingestion Rate (μg/mg/h)",
   add = "jitter",
   width = .8,
   ggtheme = theme_pubclean(base_size = 14)) + 
   rotate_x_text(angle = 60) +
-  labs(color = "Treatment") +
-  stat_pvalue_manual(pwc_IR_group,
+  labs(color = "treatment") +
+  stat_pvalue_manual(pwc_IR_culture,
                      label = "p.adj.signif",
                      hide.ns = T) 
 
 
 FRG_table_chlamy <- filter(combined_data, ctrl == "chlamy")  |>
-  anova_test(dv = FR, wid = Treatment, between = strain) |>
+  anova_test(dv = FR, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #Sig difference in at least one chlamy only treatment, perhaps incubation with Microcystis changes clearance rate, but not the ingestion rate.
 
 FRG_table_mixed <- filter(combined_data, ctrl == "mixed")  |>
-  anova_test(dv = FR, wid = Treatment, between = strain) |>
+  anova_test(dv = FR, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
 
 FRG_table_both <- filter(combined_data,category == "grn")  |>
-  anova_test(dv = FR, wid = Treatment, between = c(ctrl,strain)) |>
+  anova_test(dv = FR, wid = treatment, between = c(ctrl,strain)) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr")
 
@@ -569,24 +550,24 @@ FRG_chlamy <- ggboxplot(
   add = "jitter",
   width = .8,
   ggtheme = theme_pubclean(base_size = 14)) + 
-  labs(color = "Treatment") +
+  labs(color = "treatment") +
   rotate_x_text(angle = 60) +
   stat_pvalue_manual(pwc_FRG_group,
                      label = "p.adj.signif",
                      hide.ns = T)
 
 FIG_table_chlamy <- filter(combined_data, group == "Chlamy") |>
-  anova_test(dv = FIG, wid = Treatment, between = strain) |>
+  anova_test(dv = FIG, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #No sig difference. Suggests mussels fed on chlamy only treatments in the same way, and incubation with Microcystis and Chlamy together did not change feeding habits.
 
 FIG_table_mixed <- filter(combined_data, group == "Mixed") |>
-  anova_test(dv = FIG, wid = Treatment, between = strain) |>
+  anova_test(dv = FIG, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
 
 FIG_table_both <- filter(combined_data,category == "grn")  |>
-  anova_test(dv = FI, wid = Treatment, between = c(ctrl,strain)) |>
+  anova_test(dv = FI, wid = treatment, between = c(ctrl,strain)) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #No sig difference for group, suggests mussels fed the same on green algae regardless of microcystis being present. Sig difference for strain and group:strain, so feeding differences are dependent on genotype most likely.
 
@@ -615,23 +596,23 @@ FIG_chlamy <- ggboxplot(
   width = .8,
   ggtheme = theme_pubclean(base_size = 14)) + 
   rotate_x_text(angle = 60) +
-  labs(color = "Treatment") +
+  labs(color = "treatment") +
   stat_pvalue_manual(pwc_FIG_group,
                      label = "p.adj.signif",
                      hide.ns = T) 
 
 IRG_table_chlamy <- filter(combined_data, group == "Chlamy") |>
-  anova_test(dv = IRG, wid = Treatment, between = strain) |>
+  anova_test(dv = IRG, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #No sig difference. Suggests mussels fed on chlamy only treatments in the same way, and incubation with Microcystis and Chlamy together did not change feeding habits.
 
 IRG_table_mixed <- filter(combined_data, group == "Mixed") |>
-  anova_test(dv = IRG, wid = Treatment, between = strain) |>
+  anova_test(dv = IRG, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
 
 IRG_table_both <- filter(combined_data,category == "grn")  |>
-  anova_test(dv = IRG, wid = Treatment, between = c(group,strain)) |>
+  anova_test(dv = IRG, wid = treatment, between = c(group,strain)) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #No sig difference for group, suggests mussels fed the same on green algae regardless of microcystis being present. Sig difference for strain and group:strain, so feeding differences are dependent on genotype most likely.
 
@@ -660,24 +641,24 @@ IRG_chlamy <- ggboxplot(
   width = .8,
   ggtheme = theme_pubclean(base_size = 14)) + 
   rotate_x_text(angle = 60) +
-  labs(color = "Treatment") +
+  labs(color = "treatment") +
   stat_pvalue_manual(pwc_IRG_group,
                      label = "p.adj.signif",
                      hide.ns = T) 
 
 
 CRG_table_chlamy <- filter(combined_data, group == "Chlamy")  |>
-  anova_test(dv = CRG, wid = Treatment, between = strain) |>
+  anova_test(dv = CRG, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #Sig difference in at least one chlamy only treatment, perhaps incubation with Microcystis changes clearance rate, but not the ingestion rate.
 
 CRG_table_mixed <- filter(combined_data, group == "Mixed")  |>
-  anova_test(dv = CRG, wid = Treatment, between = strain) |>
+  anova_test(dv = CRG, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #Sig difference, at least one mixed treatment altered mussel feeding behavior on chlamy
 
 CRG_table_both <- filter(combined_data,category == "grn")  |>
-  anova_test(dv = CRG, wid = Treatment, between = c(group,strain)) |>
+  anova_test(dv = CRG, wid = treatment, between = c(group,strain)) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr")
 
@@ -699,7 +680,7 @@ CRG_chlamy <- ggboxplot(
   title = "Quagga Mussel Feeding on C. oblonga\nin the Presence of Microcystis",
   width = .8,
   ggtheme = theme_pubclean(base_size = 14)) + 
-  labs(color = "Treatment") +
+  labs(color = "treatment") +
   stat_pvalue_manual(pwc_CRG_group,
                      label = "p.adj.signif",
                      hide.ns = T) +
@@ -714,10 +695,10 @@ ggsave('../../figures/mf_results/feeding_rates/green_alga_feeding.png',grn_feedi
 
 #Bluegreen clearance rates across strains
 FRB_table <- filter(combined_data, group == "Mixed") |>
-  anova_test(dv = FRB, wid = Treatment, between = strain, observed = c(mcy,aer,mcn,apn,mvd,PmNT3,pir)) |>
+  anova_test(dv = FRB, wid = treatment, between = strain, observed = c(mcy,aer,mcn,apn,mvd,PmNT3,pir)) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #Significant, there is at least one treatment where the mussels fed differently on bluegreen vs other exps
-mixed_data <- filter(plotting_data, str_detect(Treatment, '\\+')) |>
+mixed_data <- filter(plotting_data, str_detect(treatment, '\\+')) |>
   ungroup() |>
   dplyr::select(strain, avg_FRB,avg_FIB,avg_CRB,avg_IRB, mcy, aer, mcn, apn, mvd, PmNT3, pir) |>
   column_to_rownames("strain")
@@ -739,10 +720,10 @@ tukey_FRB <- multcompLetters4(anova, tukey)
 cld_FRB <- as.data.frame.list(tukey_FRB$`strain`) |>
   rownames_to_column("strain")
 
-value_max_FRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, Treatment) %>% summarize(max_value = max(FRB)) |>
+value_max_FRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, treatment) %>% summarize(max_value = max(FRB)) |>
   left_join(cld_FRB)
 
-FRB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. oblonga +"))|> left_join(cld_FRB) |> arrange(strain), 
+FRB_barplot <- ggplot(data = filter(plotting_data, str_detect(treatment, "C. oblonga +"))|> left_join(cld_FRB) |> arrange(strain), 
        aes(x = strain, y = avg_FRB)) +
   ylab("Clearance Rate on Removed Material (mL/mg AFDW/h)") +
   geom_col(width = .7 , color = 'black', fill = NA) +
@@ -754,7 +735,7 @@ FRB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. obl
 
 
 FIB_table <- filter(combined_data, group == "Mixed") |>
-  anova_test(dv = FIB, wid = Treatment, between = strain) |>
+  anova_test(dv = FIB, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #Significant, there is at least one treatment where the mussels fed differently on bluegreen vs other exps
 
@@ -770,10 +751,10 @@ tukey_FIB <- multcompLetters4(anova, tukey)
 cld_FIB <- as.data.frame.list(tukey_FIB$`strain`) |>
   rownames_to_column("strain")
 
-value_max_FIB <- filter(combined_data, group == "Mixed") %>% group_by(strain, Treatment) %>% summarize(max_value = max(FIB)) |>
+value_max_FIB <- filter(combined_data, group == "Mixed") %>% group_by(strain, treatment) %>% summarize(max_value = max(FIB)) |>
   left_join(cld_FIB)
 
-FIB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. oblonga +"))|> left_join(cld_FIB) |> arrange(strain), 
+FIB_barplot <- ggplot(data = filter(plotting_data, str_detect(treatment, "C. oblonga +"))|> left_join(cld_FIB) |> arrange(strain), 
        aes(x = strain, y = avg_FIB)) +
   ylab("Clearance Rate on Ingested Material (mL/mg AFDW/h)") +
   geom_col(width = .7 , color = 'black', fill = NA) +
@@ -786,7 +767,7 @@ FIB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. obl
 #Between Bluegreen ingestion across strains
 
 IRB_table <- filter(combined_data, group == "Mixed") |>
-  anova_test(dv = IRB, wid = Treatment, between = strain) |>
+  anova_test(dv = IRB, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") #Significant, there is at least one treatment where the mussels fed differently on bluegreen vs other exps
 
@@ -802,10 +783,10 @@ tukey_IRB <- multcompLetters4(anova, tukey)
 cld_IRB <- as.data.frame.list(tukey_IRB$`strain`) |>
   rownames_to_column("strain")
 
-value_max_IRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, Treatment) %>% summarize(max_value = max(IRB)) |>
+value_max_IRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, treatment) %>% summarize(max_value = max(IRB)) |>
   left_join(cld_IRB)
 
-IRB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. oblonga +"))|> left_join(cld_IRB) |> arrange(strain), 
+IRB_barplot <- ggplot(data = filter(plotting_data, str_detect(treatment, "C. oblonga +"))|> left_join(cld_IRB) |> arrange(strain), 
        aes(x = strain, y = avg_IRB)) +
   ylab("Ingestion Rate (μg/mg/h)") +
   geom_col(width = .7 , color = 'black', fill = NA) +
@@ -816,7 +797,7 @@ IRB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. obl
 
 
 CRB_table <- filter(combined_data, group == "Mixed") |>
-  anova_test(dv = CRB, wid = Treatment, between = strain) |>
+  anova_test(dv = CRB, wid = treatment, between = strain) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr")
 
@@ -831,10 +812,10 @@ tukey_CRB <- multcompLetters4(anova, tukey)
 cld_CRB <- as.data.frame.list(tukey_CRB$`strain`) |>
   rownames_to_column("strain")
 
-value_max_CRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, Treatment) %>% summarize(max_value = max(CRB)) |>
+value_max_CRB <- filter(combined_data, group == "Mixed") %>% group_by(strain, treatment) %>% summarize(max_value = max(CRB)) |>
   left_join(cld_CRB)
 
-CRB_barplot <- ggplot(data = filter(plotting_data, str_detect(Treatment, "C. oblonga +"))|> left_join(cld_CRB) |> arrange(strain), 
+CRB_barplot <- ggplot(data = filter(plotting_data, str_detect(treatment, "C. oblonga +"))|> left_join(cld_CRB) |> arrange(strain), 
        aes(x = strain, y = avg_CRB)) +
   ylab("Clearance Rate (μg/mg/h)") +
   geom_col(width = .7 , color = 'black', fill = NA) +
