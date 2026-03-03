@@ -106,6 +106,8 @@ map <- read_csv("DAM_map.csv", col_types = cols(
          Date = format(Date,"%m-%d-%Y")) |>
   select(-strain)
 
+strain_info <- read_csv("strain_info.csv") |>
+  arrange(species)
 
 #Import plate data with annotations
 raw_data <- file_list |>
@@ -223,7 +225,7 @@ treatment_data <- full_data |>
 
 #Calculations for control data to get final water column and mixed measurements to correct for settling and death in mussel grazer experiments 
 control_data <- filter(treatment_data, rep == 'C') |>
-  select(treatment,Timepoint, Date, strain, category, avg_chla, avg_time, V, VFWC, VFM, hours) |>
+  select(treatment,Timepoint, Date, strain,category, avg_chla, avg_time, V, VFWC, VFM, hours) |>
   group_by(strain, Date, category) |>
   mutate(C0 = avg_chla[Timepoint == "T0"], #Initial control measurement time T0.
          CFWC = avg_chla[Timepoint == "T5"], #Final control measurement before mixing
@@ -236,7 +238,7 @@ control_data <- filter(treatment_data, rep == 'C') |>
 
 #Calculations for experimental data to get final water column and mixed measurements
 exp_data <-  filter(treatment_data, rep != 'C') |>
-  select(treatment,Timepoint, Date, strain,open_time1, open_time2,total_AFDW, category, avg_chla, avg_time, V, VFWC, VFM, hours) |>
+  select(treatment,Timepoint, Date, strain,species, name,open_time1, open_time2,total_AFDW, category, avg_chla, avg_time, V, VFWC, VFM, hours) |>
   group_by(treatment, strain, Date, category) |>
   mutate(Z0 = avg_chla[Timepoint == "T0"], #Initial control measurement time T0.
          ZFWC = avg_chla[Timepoint == "T5"], #Final control measurement before mixing
@@ -428,10 +430,15 @@ ggsave('./figures/grazing_rates/clearance_rates.png',labeled_plots,
 
 #Calculate mean, sd, se in prep for plotting.
 plotting_data <- combined_data |>
-  group_by(strain, category) |>
+  group_by(strain, category, species, name) |>
     #Average the clearance and ingestion rates for each fraction. Using across() saves us from doing the renaming ourselves
-  summarise(across(c(CR,IR,FI,FR),list(avg = mean,sd = sd , se = ~(sd(.)/sqrt(n()))), .names = "{.fn}_{.col}")) #|>
-  #inner_join(strain_info) #add strain data here
+  summarise(across(c(CR,IR,FI,FR),list(avg = mean,sd = sd , se = ~(sd(.)/sqrt(n()))), .names = "{.fn}_{.col}")) |>
+  mutate(axis_label = case_when(
+    species == "aphan" ~ glue("<span style='color:seagreen3'>{name}</span>"),
+         species == "doli" ~ glue("<span style='color:purple2'>{name}</span>"),
+    species == "micro" ~ glue("<span style='color:tan3'>{name}</span>"),
+T ~ NA)) |>
+  arrange(species)
 ```
 Could condese below code even further by doing a pivot_wider on combined data to make IR,FR,CR,IR into a "rate" column and then run a for loop on that column and the category column to codense all of this.
 ```{r Stats}
@@ -449,7 +456,7 @@ filter(combined_data, strain == "C") |>
   group_by(category) |>
   shapiro_test(vars = c("FR","FI", "CR","IR")) #Passes normality test
 
-#PCC Microcystis strains
+#Cyano strains
 filter(combined_data, !str_detect(strain, "C")) |>
   group_by(category) |>
   shapiro_test(vars = c("FR","FI", "CR","IR"))#Passes normality test
@@ -474,7 +481,7 @@ filter(combined_data) |>
 ####Anova Tests and pairwise comparisons
 #Between Green algae ingestion and clearance within a treatment
 IR_table <- filter(combined_data, category == "grn") |>
-  anova_test(dv = IR, wid = treatment, between = strain) |>
+  anova_test(dv = IR, wid = treatment, between = name) |>
   get_anova_table() |>
   adjust_pvalue(method = "fdr") 
 
@@ -490,13 +497,13 @@ cld_list <- list()
 
 for (cat in categories) {
   data_cat <- combined_data |> filter(category == cat)
-  aov_cat <- aov(IR ~ strain, data = data_cat)
+  aov_cat <- aov(IR ~ name, data = data_cat)
   tukey_cat <- TukeyHSD(aov_cat)
   cld_cat <- multcompLetters4(aov_cat, tukey_cat)
   
 # Convert CLD table to dataframe with strain as a column
-  df <- as.data.frame.list(cld_cat$`strain`)
-  df <- rownames_to_column(df, var = "strain")
+  df <- as.data.frame.list(cld_cat$`name`)
+  df <- rownames_to_column(df, var = "name")
   df$category <- cat
   
   cld_list[[cat]] <- df
@@ -510,8 +517,9 @@ cld_combined <- bind_rows(
   })
 )
 
-IR_barplot <- ggplot(data = plotting_data |> left_join(cld_combined) |> arrange(strain), aes(x = strain, y = avg_IR, color = category)) +
+IR_barplot <- ggplot(data = plotting_data |> left_join(cld_combined), aes(x = axis_label, y = avg_IR, color = category)) +
   ylab("Ingestion Rate (μg chlA/mg AFDW/h)") +
+  xlab("Cyanobacteria Strain") +
   geom_col(width = .7 , fill = NA, position = position_dodge(width = 0.75)) +
   scale_color_manual("", values = c("blugrn" = "#3399FF",
                                                "grn" = "orange2",
@@ -522,9 +530,12 @@ IR_barplot <- ggplot(data = plotting_data |> left_join(cld_combined) |> arrange(
   geom_errorbar(aes(ymin = avg_IR - se_IR, ymax = avg_IR + se_IR),
                 width = 0.2, position = position_dodge(width = 0.75)) +
   theme_pubclean(base_size = 14) +
-  geom_text(aes(label = Letters, x = strain, y = avg_IR + se_IR + 0.01),
+  geom_text(aes(label = Letters, x = axis_label, y = avg_IR + se_IR + 0.01),
                 position = position_dodge(width = 0.75), check_overlap = T) +
-  rotate_x_text(angle = 60)
+  #scale_x_discrete(labels = unique(plotting_data$axis_label))) +
+  theme(
+    axis.text.x = element_markdown(size = 12, angle = 45, hjust = 1)
+  ) 
 
 FRG_table_chlamy <- filter(combined_data, ctrl == "chlamy")  |>
   anova_test(dv = FR, wid = treatment, between = strain) |>
